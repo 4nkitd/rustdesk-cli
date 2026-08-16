@@ -8,6 +8,8 @@
 
 A pure-Go CLI that speaks the RustDesk wire protocol directly — no GUI, no official binary required. Connect to any RustDesk machine by ID, name, or tag and do real work: remote file transfer, TCP tunnels, and remote shells. Output is designed for both humans and AI agents (stable aligned tables + strict JSON).
 
+> ⚠️ **Not the botnet.** In early 2026 a Go-based botnet ("Go Client", ~2M IPs) was reported scanning and brute-forcing RustDesk endpoints (rustdesk/rustdesk#14167). rdcli is unrelated to it: this is auditable open-source software that **only ever connects to machine refs you explicitly provide** — it has no scanning, no ID enumeration, and no brute-force mode. Never accept connections from clients you don't recognize, and use strong peer passwords.
+
 ![rdcli demo](docs/demo.svg)
 
 ```
@@ -236,6 +238,9 @@ Honest list — read before you rely on it:
 
 **Is this an official RustDesk tool?**
 No. It's an independent CLI that interoperates with the RustDesk ecosystem (public servers, self-hosted hbbs/hbbr, and the official desktop client).
+
+**Is rdcli the "Go Client" botnet?**
+No. That's a separate ~2M-IP credential attack reported in [rustdesk/rustdesk#14167](https://github.com/rustdesk/rustdesk/discussions/14167). rdcli is fully auditable AGPL-3.0 source, connects only to IDs/names/tags you explicitly pass, and has no scanning or brute-force functionality. Contributions and security reviews are welcome so the code stays trustworthy.
 
 **Can I use it with my self-hosted RustDesk server?**
 Yes — pass `--server <host:port>` and `--key <licence-key>`, or set them in config. Self-hosted Pro address books work via `api_server`/`api_username`/`api_password`.
