@@ -1,17 +1,33 @@
 # rdcli — headless RustDesk client CLI
 
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Release](https://img.shields.io/github/v/release/4nkitd/rustdesk-cli)](https://github.com/4nkitd/rustdesk-cli/releases)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/4nkitd/rustdesk-cli/release.yml?label=release%20builds)](https://github.com/4nkitd/rustdesk-cli/actions)
+[![Stars](https://img.shields.io/github/stars/4nkitd/rustdesk-cli?style=social)](https://github.com/4nkitd/rustdesk-cli)
+
 A pure-Go CLI that speaks the RustDesk wire protocol directly — no GUI, no official binary required. Connect to any RustDesk machine by ID, name, or tag and do real work: remote file transfer, TCP tunnels, and remote shells. Output is designed for both humans and AI agents (stable aligned tables + strict JSON).
 
+![rdcli demo](docs/demo.svg)
+
 ```
-rdcli -c kali ls C:/Users/anki7
-rdcli -c kali cp ./backup.tar.gz C:/Users/anki7/Desktop/
-rdcli -c kali sh "ipconfig"
-rdcli -c kali tunnel -L 3389:localhost:3389
+rdcli -c home-pc ls C:/Users/jane
+rdcli -c home-pc cp ./backup.tar.gz C:/Users/jane/Desktop/
+rdcli -c home-pc sh "ipconfig"
+rdcli -c home-pc tunnel -L 3389:localhost:3389
 ```
 
 ## Why
 
 RustDesk's public server now requires login, and the desktop GUI is the only official client. `rdcli` speaks the protocol itself: it reuses your existing RustDesk login (including the desktop app's remembered credentials), punches through NAT via hbbs, relays via hbbr, and authenticates to the controlled peer — all from a terminal.
+
+## Use cases
+
+- **Scripting & automation** — run remote commands, copy files, and set up tunnels from cron, CI, or deploy scripts; exit codes and JSON output make it pipe-friendly.
+- **AI agents** — `--json` everywhere and no interactive prompts means a model can drive it: list devices, inspect a machine, pull logs.
+- **Headless boxes** — manage machines that only have RustDesk installed (no display, no GUI session) straight from your terminal.
+- **Homelab / self-hosted RustDesk** — point it at your own hbbs/hbbr with `--server`/`--key`, or use the Pro address-book API for device discovery.
+- **RDP/SSH jump** — `tunnel -L` turns any RustDesk peer into a bastion: `rdcli -c home-pc tunnel -L 3389:localhost:3389` then `mstsc`.
 
 ## Install
 
@@ -48,14 +64,14 @@ rdcli import-gui
 rdcli auth status
 
 # 3. Remember a machine's password (by id, name, or tag)
-rdcli connect kali -p "your-password"
+rdcli connect home-pc -p "your-password"
 
 # 4. Go
-rdcli -c kali ls C:/Users/anki7
-rdcli -c kali cp ./file.txt C:/Users/anki7/Desktop/
-rdcli -c kali cp C:/Users/anki7/Desktop/file.txt ./
-rdcli -c kali sh "whoami"
-rdcli -c kali tunnel -L 8080:localhost:80
+rdcli -c home-pc ls C:/Users/jane
+rdcli -c home-pc cp ./file.txt C:/Users/jane/Desktop/
+rdcli -c home-pc cp C:/Users/jane/Desktop/file.txt ./
+rdcli -c home-pc sh "whoami"
+rdcli -c home-pc tunnel -L 8080:localhost:80
 ```
 
 Machine refs resolve in this order: **exact ID → name (case-insensitive substring) → tag → raw ID**.
@@ -87,8 +103,8 @@ Saved peer passwords work too: `rdcli` understands the desktop app's encrypted `
 List a remote directory (default: current dir).
 
 ```sh
-rdcli -c kali ls
-rdcli -c kali ls C:/Users/anki7 --json
+rdcli -c home-pc ls
+rdcli -c home-pc ls C:/Users/jane --json
 ```
 
 ### `rdcli cp <ref> <src> <dst> [-r]`
@@ -96,10 +112,10 @@ rdcli -c kali ls C:/Users/anki7 --json
 Copy files either direction. Direction is auto-detected: a destination starting with `/` or a drive letter (`C:`) is remote.
 
 ```sh
-rdcli -c kali cp ./backup.zip C:/Users/anki7/Desktop/          # upload
-rdcli -c kali cp C:/Users/anki7/Desktop/backup.zip ./          # download
-rdcli -c kali cp -r ./project C:/Users/anki7/project           # recursive
-rdcli -c kali cp -d up ./f.txt C:/Users/anki7/f.txt            # force direction: up|down
+rdcli -c home-pc cp ./backup.zip C:/Users/jane/Desktop/          # upload
+rdcli -c home-pc cp C:/Users/jane/Desktop/backup.zip ./          # download
+rdcli -c home-pc cp -r ./project C:/Users/jane/project           # recursive
+rdcli -c home-pc cp -d up ./f.txt C:/Users/jane/f.txt            # force direction: up|down
 ```
 
 Progress bar goes to stderr (stdout stays clean for pipes and JSON).
@@ -109,8 +125,8 @@ Progress bar goes to stderr (stdout stays clean for pipes and JSON).
 Interactive PTY without a command; one-shot execution with one.
 
 ```sh
-rdcli -c kali sh
-rdcli -c kali sh "ipconfig /all"
+rdcli -c home-pc sh
+rdcli -c home-pc sh "ipconfig /all"
 ```
 
 ### `rdcli tunnel <ref> -L <lport>:<rhost>:<rport> [--once]`
@@ -118,8 +134,8 @@ rdcli -c kali sh "ipconfig /all"
 TCP port forward through the peer.
 
 ```sh
-rdcli -c kali tunnel -L 3389:localhost:3389      # RDP through the peer
-rdcli -c kali tunnel --once -L 0:localhost:22    # single stream, pipes stdin/stdout
+rdcli -c home-pc tunnel -L 3389:localhost:3389      # RDP through the peer
+rdcli -c home-pc tunnel --once -L 0:localhost:22    # single stream, pipes stdin/stdout
 ```
 
 ### `rdcli devices` / `rdcli tag`
@@ -129,9 +145,9 @@ Address book and local tags.
 ```sh
 rdcli devices                     # table: ID NAME TAGS ONLINE PLATFORM LAST_SEEN
 rdcli devices --online --tag prod
-rdcli devices search kali --json
-rdcli tag add 1492090403 prod
-rdcli tag rm 1492090403 prod
+rdcli devices search home --json
+rdcli tag add 1234567890 prod
+rdcli tag rm 1234567890 prod
 rdcli tag ls
 ```
 
@@ -140,9 +156,9 @@ rdcli tag ls
 Save/forget peer passwords in config (supports id, name, or tag refs).
 
 ```sh
-rdcli connect kali -p "hunter2"
-rdcli connect 1492090403          # prompts-free: uses RDC_PASSWORD / config only
-rdcli disconnect kali
+rdcli connect home-pc -p "your-password"
+rdcli connect 1234567890          # prompts-free: uses RDC_PASSWORD / config only
+rdcli disconnect home-pc
 ```
 
 ### `rdcli ping <ref>`
@@ -168,11 +184,11 @@ Online check via the rendezvous server (exit 0 = online, 1 = offline).
 All output is a single JSON object on stdout; errors go to stderr; no progress/colors pollute stdout.
 
 ```json
-{"version":1,"devices":[{"id":"1492090403","name":"anki7-kali","tags":["windows"],"online":true,"platform":"Windows","last_seen":"","source":"local"}]}
+{"version":1,"devices":[{"id":"1234567890","name":"home-pc","tags":["windows"],"online":true,"platform":"Windows","last_seen":"","source":"local"}]}
 ```
 
 ```json
-{"version":1,"path":"C:/Users/anki7","entries":[{"name":"Desktop","type":"dir","size":0,"modified_time":1755317100,"is_hidden":false}]}
+{"version":1,"path":"C:/Users/jane","entries":[{"name":"Desktop","type":"dir","size":0,"modified_time":1755317100,"is_hidden":false}]}
 ```
 
 ## Config
@@ -188,15 +204,15 @@ api_server = ""           # self-hosted Pro API base URL (address book)
 api_username = ""
 api_password = ""
 
-[peers."1492090403"]
-password = "00ARCLs/iMvKkARGL2LnikGoOzcbgmlTl9a63qGBiJc82zHb86mGlzmMSQBwys1FKDOnDZ1Xq5diw7Xli0YUdlxG3W4z6PqcqMqw=="
-name = "anki7-kali"
+[peers."1234567890"]
+password = "00AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+name = "home-pc"
 
 [tags]
-"1492090403" = ["windows", "prod"]
+"1234567890" = ["windows", "prod"]
 ```
 
-`rdcli import-gui` populates peers from your desktop app automatically.
+`rdcli import-gui` populates peers from your desktop app automatically. The config file is written with `0600` permissions.
 
 ## Exit codes
 
@@ -206,13 +222,46 @@ name = "anki7-kali"
 | 1 | Runtime / auth / network error |
 | 2 | Usage error |
 
+## Limitations
+
+Honest list — read before you rely on it:
+
+- **No screen sharing, clipboard sync, or audio.** This is a headless client for file/terminal/tunnel work, not a full remote-desktop replacement.
+- **UDP NAT test is not implemented** — direct hole punching uses TCP only, so some symmetric-NAT peers fall back to relay. Relay always works.
+- **Terminal requires peer ≥ 1.4.1** (older peers reject terminal sessions).
+- **Public server needs a login token** — same as the official client since RustDesk enabled mandatory login.
+- **Not affiliated with RustDesk.** An independent, clean-room-ish port of the wire protocol (see License).
+
+## FAQ
+
+**Is this an official RustDesk tool?**
+No. It's an independent CLI that interoperates with the RustDesk ecosystem (public servers, self-hosted hbbs/hbbr, and the official desktop client).
+
+**Can I use it with my self-hosted RustDesk server?**
+Yes — pass `--server <host:port>` and `--key <licence-key>`, or set them in config. Self-hosted Pro address books work via `api_server`/`api_username`/`api_password`.
+
+**Do I need the RustDesk GUI installed?**
+No. The GUI is optional — `import-gui` is a convenience to reuse an existing login and saved passwords. Everything works standalone with `--token`/`RDC_TOKEN`.
+
+**Is it safe to store passwords in config?**
+The config file is written with `0600` permissions (owner-only). Peer passwords are stored the same way the desktop app does; encrypted `00...` blobs are decrypted only in memory for the handshake.
+
+**Why AGPL-3.0?**
+The wire protocol details were ported from the AGPL-licensed RustDesk sources, so rdcli is AGPL-3.0 too. That's the correct and honest license for this project.
+
 ## Protocol notes
 
 - **Framing**: variable-length little-endian header (1–4 bytes), bottom 2 bits = header length, remaining bits = payload length (ported from `bytes_codec.rs`).
 - **Crypto**: NaCl `box` for key exchange, `secretbox` for streams with sequential nonces; Ed25519 server-signed identity blobs (signature-first layout, like sodiumoxide `sign::sign`).
 - **Rendezvous**: `PunchHoleRequest` over TCP (UDP NAT test not implemented — direct punch may be limited; relay always works), token-authenticated via hbbs `KeyExchange`.
 - **Login**: password hashed `sha256(sha256(pw+salt)+challenge)`; supports the GUI's encrypted `00`-prefixed password blobs.
-- Terminal requires peer ≥ 1.4.1.
+
+## Roadmap
+
+- UDP NAT traversal for reliable direct connections
+- Windows release binaries in CI (formula/build matrix already prepared)
+- Clipboard and session-aware file resume improvements
+- Shell completion scripts (bash/zsh/fish)
 
 ## Development
 
@@ -227,3 +276,7 @@ Release builds for linux/darwin/windows (amd64+arm64) are automated via GitHub A
 ## License
 
 AGPL-3.0 — this project ports wire-protocol details from the AGPL-licensed [RustDesk](https://github.com/rustdesk/rustdesk) sources.
+
+---
+
+Like it? [Star the repo](https://github.com/4nkitd/rustdesk-cli) and tell me what you'd use it for. Issues, PRs, and wild feature requests are welcome.

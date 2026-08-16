@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="560" viewBox="0 0 940 560" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+<defs><style>.t{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:14px;}</style></defs>
+<rect width="940" height="560" rx="14" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+<rect y="0" width="940" height="44" rx="14" fill="#161b22"/>
+<rect y="28" width="940" height="16" fill="#161b22"/>
+<circle cx="28" cy="22" r="6.5" fill="#ff5f57"/><circle cx="50" cy="22" r="6.5" fill="#febc2e"/><circle cx="72" cy="22" r="6.5" fill="#28c840"/>
+<text x="470.0" y="27" text-anchor="middle" fill="#8b949e" font-size="12.5">rdcli — headless RustDesk client CLI</text>
+<text x="28.0" y="74" fill="#3fb950" class="t">$ </text>
+<text x="44.8" y="74" fill="#79c0ff" class="t">rdcli devices</text>
+<text x="28.0" y="98" fill="#8b949e" class="t">ID          NAME      TAGS          ONLINE  PLATFORM  LAST_SEEN</text>
+<text x="28.0" y="122" fill="#c9d1d9" class="t">1492090403  home-pc   windows,prod  yes     Windows   2m ago</text>
+<text x="28.0" y="146" fill="#c9d1d9" class="t">9812735561  work-pc   linux         yes     Linux     1h ago</text>
+<text x="28.0" y="170" fill="#c9d1d9" class="t">5571800234  server1   headless      no      Linux     3d ago</text>
+<text x="28.0" y="218" fill="#3fb950" class="t">$ </text>
+<text x="44.8" y="218" fill="#79c0ff" class="t">rdcli -c home-pc ls C:/Users/jane</text>
+<text x="28.0" y="242" fill="#8b949e" class="t">NAME          TYPE  SIZE      MODIFIED_TIME</text>
+<text x="28.0" y="266" fill="#c9d1d9" class="t">backup.zip    file  8.2 MB    2026-08-15 14:02</text>
+<text x="28.0" y="290" fill="#c9d1d9" class="t">project       dir   -         2026-08-14 09:31</text>
+<text x="28.0" y="314" fill="#c9d1d9" class="t">notes.txt     file  1.1 KB    2026-08-16 08:12</text>
+<text x="28.0" y="362" fill="#3fb950" class="t">$ </text>
+<text x="44.8" y="362" fill="#79c0ff" class="t">rdcli -c home-pc sh &quot;ipconfig /all&quot;</text>
+<text x="28.0" y="386" fill="#c9d1d9" class="t">Windows IP Configuration</text>
+<text x="28.0" y="410" fill="#c9d1d9" class="t">   IPv4 Address . . . . : 192.168.1.42</text>
+<text x="28.0" y="434" fill="#c9d1d9" class="t">   Subnet Mask  . . . . : 255.255.255.0</text>
+<text x="28.0" y="482" fill="#3fb950" class="t">$ </text>
+<text x="44.8" y="482" fill="#79c0ff" class="t">rdcli -c home-pc tunnel -L 3389:localhost:3389</text>
+<text x="28.0" y="506" fill="#ffa657" class="t">listening on 127.0.0.1:3389 -&gt; home-pc:3389 (relay)</text>
+<text x="28.0" y="530" fill="#3fb950" class="t">$ </text>
+</svg>

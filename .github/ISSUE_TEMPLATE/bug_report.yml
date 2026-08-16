@@ -1,0 +1,49 @@
+name: Bug report
+description: Something isn't working as documented
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Command used, expected vs actual output.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: rdcli version
+      description: Output of `rdcli version`
+    validations:
+      required: true
+  - type: dropdown
+    id: server
+    attributes:
+      label: Server
+      options:
+        - Public rustdesk.com
+        - Self-hosted hbbs/hbbr
+        - Direct IP
+    validations:
+      required: true
+  - type: input
+    id: peer
+    attributes:
+      label: Peer version
+      description: RustDesk version on the controlled machine (if known)
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS
+        - Linux
+        - Windows
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Verbose output
+      description: Run with --json if applicable. Redact any passwords or tokens.
