@@ -15,10 +15,17 @@ RustDesk's public server now requires login, and the desktop GUI is the only off
 
 ## Install
 
-### Homebrew (macOS)
+### Homebrew (macOS / Linux)
 
 ```sh
-brew tap 4nkitd/homebrew-rustdesk-cli
+brew tap 4nkitd/tap
+brew install rustdesk-cli
+```
+
+If your Homebrew version requires trusting third-party taps:
+
+```sh
+brew trust 4nkitd/tap
 brew install rustdesk-cli
 ```
 
