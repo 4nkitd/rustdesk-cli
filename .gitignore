@@ -1,0 +1,13 @@
+# build artifacts
+rdcli
+mockrv
+mockapi
+dist/
+*.exe
+*.test
+
+# macOS
+.DS_Store
+
+# local config
+config.toml
