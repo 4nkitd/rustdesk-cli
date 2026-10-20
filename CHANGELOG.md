@@ -40,7 +40,7 @@ The combined local race-test suite and vet pass on macOS arm64 with Go 1.27.0, i
 
 ### Distribution and documentation
 
-- The public Homebrew formula `4nkitd/tap/rustdesk-cli` still references v0.1.0 assets. It has not been updated to these changes, and this documentation pass did not test installation end to end.
+- The public Homebrew formula `4nkitd/tap/rustdesk-cli` now installs v0.2.0 with bundled license notices. The macOS arm64 upgrade, formula test, installed version/help and checksum checks passed after publication.
 - Release targets remain Linux and macOS on amd64 and arm64. Windows is not a release target.
 - Document JSON per command. Shell and tunnel output remain streams; `cp` emits progress/completion on stderr rather than a JSON result. Diagnostics and file operations can emit structured failure results on stdout.
 - Add links to [upstream compatibility research](docs/COMPATIBILITY.md), the [verification runbook](docs/VERIFICATION.md), [release procedure](docs/RELEASING.md), and [protobuf maintenance](docs/PROTOBUF.md). These documents distinguish source research, local checks, and live interoperability evidence.

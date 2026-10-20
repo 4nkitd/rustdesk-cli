@@ -23,7 +23,8 @@ Release commit: `6d9fc5893cd92d9f2c0f3a93fef63d6df60438b1`.
 - `PASS`: all five files in the published checksum manifest verified after download. The sixth asset is the manifest itself. The license archive contains the project license, notices and nine dependency/runtime license files.
 - `PASS`: downloaded Mac ARM64 binary version/help in an empty environment with a temporary home. Build metadata reports Go 1.27.3, the exact release commit and `vcs.modified=false`. The installed user CLI was not replaced.
 - `PASS`: public `go install github.com/4nkitd/rustdesk-cli/cmd/rdcli@v0.2.0` and `@latest`, each with an isolated output directory, followed by version/help checks on macOS arm64.
-- `BLOCKED`: official-peer interoperability, because the approved peer was offline. No screenshot or clipboard access occurred. Windows and Homebrew installation remain unverified; the formula still references v0.1.0.
+- `PASS`: Homebrew tap commit `cbbbb94` updates all four asset URLs/checksums and installs bundled license notices. The authorized local macOS arm64 upgrade from 0.1.0 to 0.2.0, `brew test`, installed version/help and SHA-256 checks passed. `/opt/homebrew/bin/rdcli` resolves to the 0.2.0 keg; the older keg was retained. Homebrew installation on other platforms remains unverified.
+- `BLOCKED`: official-peer interoperability, because the approved peer was offline. No screenshot or clipboard access occurred. Windows remains unverified.
 
 Published SHA-256 values:
 

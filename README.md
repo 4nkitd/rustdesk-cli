@@ -8,7 +8,7 @@
 
 A pure-Go CLI that speaks the RustDesk wire protocol directly, without the official GUI or binary. Connect to RustDesk peers by ID, name, or tag for file transfers, TCP tunnels, and remote shells. Listing commands offer tables and JSON; shell and tunnel commands carry stream output. Availability depends on the peer's version, permissions, and server configuration.
 
-This README describes the published [v0.2.0 release](https://github.com/4nkitd/rustdesk-cli/releases/tag/v0.2.0). The Homebrew formula still targets v0.1.0. The new commands pass local mock tests, but real-peer compatibility remains unverified; see [verification status](#verification-status).
+This README describes the published [v0.2.0 release](https://github.com/4nkitd/rustdesk-cli/releases/tag/v0.2.0), also available through Homebrew. The new commands pass local mock tests, but real-peer compatibility remains unverified; see [verification status](#verification-status).
 
 > ⚠️ **Not the botnet.** In early 2026 a Go-based botnet ("Go Client", ~2M IPs) was reported scanning and brute-forcing RustDesk endpoints (rustdesk/rustdesk#14167). rdcli is unrelated to it: this is auditable open-source software that **only ever connects to machine refs you explicitly provide** — it has no scanning, no ID enumeration, and no brute-force mode. Never accept connections from clients you don't recognize, and use strong peer passwords.
 
@@ -42,7 +42,7 @@ brew tap 4nkitd/tap
 brew install 4nkitd/tap/rustdesk-cli
 ```
 
-The tap is hosted at [4nkitd/homebrew-tap](https://github.com/4nkitd/homebrew-tap). Its `Formula/rustdesk-cli.rb` currently references v0.1.0 release assets. Installation has not been tested end to end in this documentation pass.
+The tap is hosted at [4nkitd/homebrew-tap](https://github.com/4nkitd/homebrew-tap). Its formula installs v0.2.0 and bundled license notices. Upgrade, `brew test`, installed version/help and checksum checks passed on macOS arm64. Existing users can run `brew update` followed by `brew upgrade 4nkitd/tap/rustdesk-cli`.
 
 ### Prebuilt binaries
 
@@ -344,7 +344,7 @@ The current source registers screenshot, clipboard, info, doctor, mkdir, rm, and
 
 Security changes reject invalid signed peer identities even with `--yes`, confine download paths, and keep authentication status output to metadata. `--yes` can explicitly allow a missing-identity plaintext connection; it cannot bypass a broken signed identity chain or permit sending an OTP over an unencrypted connection.
 
-The module is now `github.com/4nkitd/rustdesk-cli`, generated protobuf imports have been regenerated, and root-anchored ignore rules no longer hide `cmd/rdcli`. These source-install repairs ship in v0.2.0. Homebrew remains on v0.1.0.
+The module is now `github.com/4nkitd/rustdesk-cli`, generated protobuf imports have been regenerated, and root-anchored ignore rules no longer hide `cmd/rdcli`. These source-install repairs ship in v0.2.0, which is also available through Homebrew.
 
 ### Verification status
 
