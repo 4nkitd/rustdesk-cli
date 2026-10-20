@@ -6,7 +6,8 @@ establish compatibility with a real RustDesk peer. Live tests need an explicitly
 approved target and operations. Never capture a screen or clipboard implicitly.
 
 The original small sequential milestones were combined after Boss requested
-20 parallel agents. The first candidate is **v0.2.0**, not yet published.
+20 parallel agents. **v0.2.0 was published on 2026-10-20** from commit
+`6d9fc5893cd92d9f2c0f3a93fef63d6df60438b1`.
 
 - [x] Implement identity, config, resolver, framing and connection hardening.
 - [x] Implement command completion and remote exit status for POSIX shells.
@@ -17,16 +18,16 @@ The original small sequential milestones were combined after Boss requested
 - [x] Migrate module/imports and restore source entrypoints to Git visibility.
 - [x] Pass an integrated local race-test/vet run after module migration.
 - [x] Resolve all final review findings and rerun the expanded test suite.
-- [ ] Validate an isolated clean tracked checkout.
-- [ ] Pass the GitHub Linux/macOS test and native artifact matrices.
-- [ ] Verify downloaded release checksums and the matching native binary.
-- [ ] Publish v0.2.0 with exact limitations and verification evidence.
+- [x] Validate an isolated clean tracked checkout.
+- [x] Pass the GitHub Linux/macOS test and native artifact matrices.
+- [x] Verify downloaded release checksums and the matching native binary.
+- [x] Publish v0.2.0 with exact limitations and verification evidence.
 
 Live verification remains blocked: the approved peer was reported offline before
 any remote command or file operation ran. No screenshot/clipboard capture is
 authorized. Transfer resume and persisted recovery are unavailable; safe terminal
-reattachment is not shipped. The combined local race suite and vet pass; GitHub
-CI and published-artifact verification remain pending.
+reattachment is not shipped. Local and GitHub release gates pass; see
+[verification evidence](docs/VERIFICATION.md#published-v020-evidence-2026-10-20).
 
 Later candidates, not part of the first feature releases: remote restart with
 confirmation, keyboard/mouse control, improved NAT traversal. Full video/audio
@@ -72,14 +73,14 @@ remain unreleased until the combined tree passes tests and final review.
 
 - [x] Track CLI and mock entrypoints, which bare binary ignore patterns hid.
 - [x] Align the module/import path with the documented GitHub install path.
-- [ ] Build with a patched supported Go toolchain and ship dependency notices.
+- [x] Build with a patched supported Go toolchain and ship dependency notices.
 - [x] Verify upload acknowledgements, including files larger than three blocks.
 - [x] Separate connection/auth deadlines from established-session lifetime.
 - [x] Reject unsolicited ID-zero listings as transfer completion evidence.
 - [x] Remove token/session-handle disclosure from status and debug output.
 - [x] Reject ambiguous machine names/tags before choosing a password or dialing.
-- [ ] Verify Linux socket semantics, rendezvous frame retention and tunnel exit.
-- [ ] Test release artifacts from a clean tracked checkout, not this worktree.
+- [x] Verify Linux socket semantics, rendezvous frame retention and tunnel exit in CI fixtures.
+- [x] Test release artifacts from a clean tracked checkout, not this worktree.
 
 ## Known protocol blockers
 

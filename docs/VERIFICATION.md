@@ -11,8 +11,29 @@ An approved live connection attempt reached rendezvous, where the server reporte
 - `PASS`: isolated staged-source build with `CGO_ENABLED=0`, then `version` and `--help` in an empty environment and temporary home. This does not replace final committed-source verification.
 - `PASS`: a clean export of indexed tree `50b27c3110055752df583b6839fec25b842a2dab` passed the complete race suite, vet, isolated `go install`, version and help. Subsequent changes before commit update documentation only.
 - `PASS`: encrypted CLI subprocess cases for diagnostics, synthetic screenshots, POSIX command exit status, multi-block uploads, missing acknowledgements and download hashes. These use mock peers, not an official RustDesk process.
-- `NOT RUN`: GitHub Go 1.27.3 test/native-build matrix and published-asset/source-install checks at the time of this pre-publication record. The tagged Actions run and release notes record their subsequent results.
+- GitHub and published-asset/source-install checks were pending in this pre-publication record; their completed results follow below.
 - `BLOCKED`: real-peer interoperability. No screen or clipboard access was authorized or attempted.
+
+## Published v0.2.0 evidence, 2026-10-20
+
+Release commit: `6d9fc5893cd92d9f2c0f3a93fef63d6df60438b1`.
+
+- `PASS`: a clean detached clone of that commit passed the complete race suite, vet, isolated install, version and help checks. The checkout remained clean.
+- `PASS`: [main CI](https://github.com/4nkitd/rustdesk-cli/actions/runs/39410948827) and [tagged release workflow](https://github.com/4nkitd/rustdesk-cli/actions/runs/39411386101), using Go 1.27.3. Tests ran on Linux amd64 and macOS arm64. Native build/version/help jobs passed on Linux and macOS, both amd64 and arm64.
+- `PASS`: all five files in the published checksum manifest verified after download. The sixth asset is the manifest itself. The license archive contains the project license, notices and nine dependency/runtime license files.
+- `PASS`: downloaded Mac ARM64 binary version/help in an empty environment with a temporary home. Build metadata reports Go 1.27.3, the exact release commit and `vcs.modified=false`. The installed user CLI was not replaced.
+- `PASS`: public `go install github.com/4nkitd/rustdesk-cli/cmd/rdcli@v0.2.0` and `@latest`, each with an isolated output directory, followed by version/help checks on macOS arm64.
+- `BLOCKED`: official-peer interoperability, because the approved peer was offline. No screenshot or clipboard access occurred. Windows and Homebrew installation remain unverified; the formula still references v0.1.0.
+
+Published SHA-256 values:
+
+```text
+d6aba92ac00c1902d540298c9bfd62d62b0b998baf0cb9d80701bb5f0f2ee328  rdcli-darwin-amd64
+26667b5a97d04e2a75826f89e31933f9eda1fcdebd0486add84dcb32277975d6  rdcli-darwin-arm64
+bb7378807a7dc120ce62ddc8c6363c7f99acf16d98f4b721e3c2d9f1180e66eb  rdcli-linux-amd64
+4549eb26eec98895a140763a8222b7ee2dd6f26af6e68ac5f84f6eef2f221878  rdcli-linux-arm64
+7cb037d8beb486a10591be6424f0e373b5ee3ea087461cf9aec296c5c4716878  rdcli-licenses.tar.gz
+```
 
 Use `PASS`, `FAIL`, `BLOCKED`, `NOT RUN`, or `NOT APPLICABLE`, with evidence and a reason. A missing feature is not a passing test. Features scheduled in [ROADMAP.md](../ROADMAP.md) become release gates when that release advertises them.
 
@@ -223,7 +244,7 @@ Use a disposable terminal and only bounded commands. Record the peer shell and i
 
 Remaining evidence and fixture gaps before broad E2E claims:
 
-1. Local combined-suite, vet, clean indexed-source and final code reviews pass. The final committed-checkout rerun, native CI build/smoke results and published artifact hashes remain separate checks; workflow definitions are not completed runs.
+1. Local combined-suite, vet, final code reviews, committed-checkout rerun, native CI build/smoke and published checksums pass for v0.2.0 as recorded above. Repeat these gates for subsequent code changes.
 2. Existing command-contract, screenshot command, pipeline, completion and policy tests are more than structure-only tests. Full subprocess checks of the exact release artifact, isolated authentication environment, OS exit status and stdout/stderr still need release evidence.
 3. Encrypted relay/OTP fixtures and framing regression tests exist. Real hbbs/hbbr routing, sustained file/terminal traffic and relay failure behavior still need approved E2E evidence; do not equate scripted route state with an observed real route.
 4. Fresh-download policy, exclusive-staging, ownership, tampering and unconditional resume-rejection fixtures exist. Fresh-process artifact checks, abrupt-kill cleanup and native filesystem behavior still need evidence. Resume and persisted recovery are unavailable; legacy checkpoints are not adopted. Ownership checks fail closed on unsupported clients, including Windows. ACL grants and hostile same-user/privileged processes are outside the checked boundary, and local staging hashes provide no remote checksum guarantee.

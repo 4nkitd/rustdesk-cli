@@ -8,7 +8,7 @@
 
 A pure-Go CLI that speaks the RustDesk wire protocol directly, without the official GUI or binary. Connect to RustDesk peers by ID, name, or tag for file transfers, TCP tunnels, and remote shells. Listing commands offer tables and JSON; shell and tunnel commands carry stream output. Availability depends on the peer's version, permissions, and server configuration.
 
-This README describes **v0.2.0**. See Releases for published artifacts; the Homebrew formula still targets v0.1.0. The new commands pass local mock tests, but real-peer compatibility remains unverified; see [verification status](#verification-status).
+This README describes the published [v0.2.0 release](https://github.com/4nkitd/rustdesk-cli/releases/tag/v0.2.0). The Homebrew formula still targets v0.1.0. The new commands pass local mock tests, but real-peer compatibility remains unverified; see [verification status](#verification-status).
 
 > ⚠️ **Not the botnet.** In early 2026 a Go-based botnet ("Go Client", ~2M IPs) was reported scanning and brute-forcing RustDesk endpoints (rustdesk/rustdesk#14167). rdcli is unrelated to it: this is auditable open-source software that **only ever connects to machine refs you explicitly provide** — it has no scanning, no ID enumeration, and no brute-force mode. Never accept connections from clients you don't recognize, and use strong peer passwords.
 
@@ -55,7 +55,7 @@ sudo mv rdcli-linux-amd64 /usr/local/bin/rdcli
 
 ### From source
 
-v0.2.0 repairs the module path and includes the previously ignored CLI entrypoint. The older v0.1.0 tag cannot be installed using this path. Use the command below once v0.2.0 is published; isolated source build/startup checks pass, while public tagged installation is verified separately after publication.
+v0.2.0 repairs the module path and includes the previously ignored CLI entrypoint. Public installation and startup checks passed with both `@v0.2.0` and `@latest` on macOS arm64. The older v0.1.0 tag cannot be installed using this path.
 
 ```sh
 go install github.com/4nkitd/rustdesk-cli/cmd/rdcli@latest
@@ -344,14 +344,14 @@ The current source registers screenshot, clipboard, info, doctor, mkdir, rm, and
 
 Security changes reject invalid signed peer identities even with `--yes`, confine download paths, and keep authentication status output to metadata. `--yes` can explicitly allow a missing-identity plaintext connection; it cannot bypass a broken signed identity chain or permit sending an OTP over an unencrypted connection.
 
-The module is now `github.com/4nkitd/rustdesk-cli`, generated protobuf imports have been regenerated, and root-anchored ignore rules no longer hide `cmd/rdcli`. These source-install repairs still need a committed release tag. Homebrew remains on v0.1.0.
+The module is now `github.com/4nkitd/rustdesk-cli`, generated protobuf imports have been regenerated, and root-anchored ignore rules no longer hide `cmd/rdcli`. These source-install repairs ship in v0.2.0. Homebrew remains on v0.1.0.
 
 ### Verification status
 
-The combined local race suite, vet, and isolated indexed-source install/startup checks pass on macOS arm64. GitHub CI and published-artifact checks are separate release gates; see their run records. The approved live peer was offline, so these changes have no live interoperability result. Source inspection, generated messages, and mock tests do not establish real-peer compatibility. Transfer resume and persisted recovery are unavailable, and terminal attach/detach remains blocked in [ROADMAP.md](ROADMAP.md).
+The combined local race suite, vet, and clean committed-source install/startup checks pass on macOS arm64. GitHub Linux/macOS tests and all four native build/smoke jobs passed. All published asset checksums verified, and the downloaded Mac ARM64 binary passed version/help checks. See [release evidence](docs/VERIFICATION.md#published-v020-evidence-2026-10-20). The approved live peer was offline, so these changes have no live interoperability result. Source inspection, generated messages, and mock tests do not establish real-peer compatibility. Transfer resume and persisted recovery are unavailable, and terminal attach/detach remains blocked in [ROADMAP.md](ROADMAP.md).
 
 - [Compatibility research](docs/COMPATIBILITY.md) records upstream version gates and protocol limits, not live test results.
-- [Verification runbook and local evidence](docs/VERIFICATION.md) records passing local checks separately from pending release checks and blocked live tests.
+- [Verification runbook and release evidence](docs/VERIFICATION.md) separates passing local/release checks from blocked live tests.
 - [Release procedure](docs/RELEASING.md) covers CI gates, artifacts, and publication.
 - [Protobuf maintenance](docs/PROTOBUF.md) records schema provenance limits and regeneration commands.
 
