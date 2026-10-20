@@ -1,18 +1,18 @@
 package cli
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strconv"
 	"strings"
 
-	"rdcli/internal/hbb"
+	"github.com/4nkitd/rustdesk-cli/internal/hbb"
 
 	"github.com/spf13/cobra"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 func newTunnelCmd() *cobra.Command {
@@ -79,14 +79,27 @@ func newTunnelConn(opts hbb.DialOpts, spec forwardSpec) (*hbb.Tunnel, error) {
 }
 
 func runTunnelOnce(cmd *cobra.Command, opts hbb.DialOpts, spec forwardSpec) error {
+	stdio, err := newTunnelStdio(os.Stdin, os.Stdout)
+	if err != nil {
+		return err
+	}
+	defer stdio.Close()
 	t, err := newTunnelConn(opts, spec)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tunnel: %v\n", err)
 		return err
 	}
 	defer t.Close()
-	stdin := &readWriteCloser{r: os.Stdin, w: os.Stdout, c: nil}
-	return t.Pipe(stdin)
+	stop := context.AfterFunc(cmd.Context(), func() {
+		t.Close()
+		stdio.Close()
+	})
+	defer stop()
+	err = t.Pipe(stdio)
+	if cmd.Context().Err() != nil {
+		return cmd.Context().Err()
+	}
+	return err
 }
 
 func runTunnelListener(cmd *cobra.Command, opts hbb.DialOpts, spec forwardSpec) error {
@@ -95,11 +108,16 @@ func runTunnelListener(cmd *cobra.Command, opts hbb.DialOpts, spec forwardSpec) 
 		return fmt.Errorf("bind 127.0.0.1:%d: %w", spec.localPort, err)
 	}
 	defer ln.Close()
+	stop := context.AfterFunc(cmd.Context(), func() { ln.Close() })
+	defer stop()
 	fmt.Fprintf(os.Stderr, "listening on 127.0.0.1:%d, forwarding to %s:%d\n", spec.localPort, spec.host, spec.port)
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if cmd.Context().Err() != nil {
+				return cmd.Context().Err()
+			}
 			return err
 		}
 		go func() {
@@ -110,22 +128,12 @@ func runTunnelListener(cmd *cobra.Command, opts hbb.DialOpts, spec forwardSpec) 
 				return
 			}
 			defer t.Close()
+			stop := context.AfterFunc(cmd.Context(), func() {
+				t.Close()
+				conn.Close()
+			})
+			defer stop()
 			_ = t.Pipe(conn)
 		}()
 	}
-}
-
-type readWriteCloser struct {
-	r io.Reader
-	w io.Writer
-	c io.Closer
-}
-
-func (rwc *readWriteCloser) Read(p []byte) (int, error)  { return rwc.r.Read(p) }
-func (rwc *readWriteCloser) Write(p []byte) (int, error) { return rwc.w.Write(p) }
-func (rwc *readWriteCloser) Close() error {
-	if rwc.c != nil {
-		return rwc.c.Close()
-	}
-	return nil
 }

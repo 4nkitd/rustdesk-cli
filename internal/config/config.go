@@ -177,11 +177,38 @@ func (c *Config) Save() error {
 	}
 
 	path := Path()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("config: mkdir %s: %w", filepath.Dir(path), err)
+	dir := filepath.Dir(path)
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("config: refusing to replace non-regular file %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("config: stat %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("config: mkdir %s: %w", dir, err)
+	}
+	file, err := os.CreateTemp(dir, ".rdcli-config-*")
+	if err != nil {
+		return fmt.Errorf("config: create temporary file for %s: %w", path, err)
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if err := file.Chmod(0o600); err != nil {
+		return fmt.Errorf("config: chmod temporary file for %s: %w", path, err)
+	}
+	if _, err := file.WriteString(b.String()); err != nil {
 		return fmt.Errorf("config: write %s: %w", path, err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("config: sync %s: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("config: close %s: %w", path, err)
+	}
+	// Rename replaces the directory entry without following a destination symlink.
+	if err := os.Rename(file.Name(), path); err != nil {
+		return fmt.Errorf("config: replace %s: %w", path, err)
 	}
 	return nil
 }

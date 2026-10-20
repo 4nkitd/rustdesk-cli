@@ -17,7 +17,7 @@ import (
 	"golang.org/x/crypto/nacl/secretbox"
 	"google.golang.org/protobuf/proto"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 const (
@@ -40,6 +40,7 @@ type DialOpts struct {
 	Server     string
 	PeerID     string
 	Password   string
+	OTP        string
 	Key        string
 	Token      string
 	ForceRelay bool
@@ -59,11 +60,13 @@ type punchResult struct {
 }
 
 type Conn struct {
-	sc       *SecureConn
-	opts     DialOpts
-	peerID   string
-	direct   bool
-	peerInfo *pb.PeerInfo
+	sc         *SecureConn
+	opts       DialOpts
+	peerID     string
+	direct     bool
+	peerInfo   *pb.PeerInfo
+	otpSent    bool
+	peerErrors peerErrorState
 }
 
 func normalizeRendezvous(server string) string {
@@ -140,7 +143,7 @@ func readRendezvousSecure(sc *SecureConn) (*pb.RendezvousMessage, error) {
 		return nil, err
 	}
 	msg := &pb.RendezvousMessage{}
-	if err := proto.Unmarshal(raw, msg); err != nil {
+	if err := decodeRendezvousMessage(raw, msg); err != nil {
 		return nil, err
 	}
 	return msg, nil
@@ -151,9 +154,6 @@ func readRendezvousSecure(sc *SecureConn) (*pb.RendezvousMessage, error) {
 // peerAddr is invalid.
 func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnType, timeout time.Duration) (punchResult, error) {
 	var res punchResult
-	if forceRelay {
-		return res, nil
-	}
 
 	addr := normalizeRendezvous(server)
 	var lastErr error
@@ -166,7 +166,8 @@ func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnT
 	}
 
 	for i := 0; i < punchMaxTry; i++ {
-		conn, err := net.DialTimeout("tcp", addr, timeout)
+		dialer := net.Dialer{Timeout: timeout, Control: reuseControl}
+		conn, err := dialer.Dial("tcp", addr)
 		if err != nil {
 			lastErr = fmt.Errorf("hbb: connect rendezvous: %w", err)
 			continue
@@ -190,6 +191,9 @@ func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnT
 					Version:    Version,
 				},
 			},
+		}
+		if forceRelay {
+			req.GetPunchHoleRequest().NatType = pb.NatType_SYMMETRIC
 		}
 
 		readMsg := func() (*pb.RendezvousMessage, error) { return readRendezvousMessage(conn) }
@@ -263,6 +267,7 @@ func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnT
 				lastErr = fmt.Errorf("hbb: unexpected rendezvous message %T", u)
 			}
 		}
+		conn.Close()
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no response from rendezvous server")
@@ -272,7 +277,7 @@ func punch(server, peerID, key, token string, forceRelay bool, connType pb.ConnT
 
 // requestRelayViaRendezvous asks hbbs to assign a relay server for force-relay
 // connections.
-func requestRelayViaRendezvous(server, peerID, key, token string, timeout time.Duration) (string, string, []byte, error) {
+func requestRelayViaRendezvous(server, peerID, relayServer, key, token string, secure bool, timeout time.Duration) (string, string, []byte, error) {
 	addr := normalizeRendezvous(server)
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
@@ -288,9 +293,10 @@ func requestRelayViaRendezvous(server, peerID, key, token string, timeout time.D
 			RequestRelay: &pb.RequestRelay{
 				Id:          peerID,
 				Uuid:        uuid,
-				RelayServer: "",
+				RelayServer: relayServer,
 				LicenceKey:  key,
 				Token:       token,
+				Secure:      secure,
 				ConnType:    pb.ConnType_DEFAULT_CONN,
 			},
 		},
@@ -317,7 +323,7 @@ func requestRelayViaRendezvous(server, peerID, key, token string, timeout time.D
 			if rr.GetRefuseReason() != "" {
 				return "", "", nil, errors.New(rr.GetRefuseReason())
 			}
-			return rr.GetRelayServer(), rr.GetUuid(), rr.GetPk(), nil
+			return rr.GetRelayServer(), uuid, rr.GetPk(), nil
 		}
 	}
 	return "", "", nil, errors.New("timeout waiting for relay response")
@@ -394,7 +400,7 @@ func Connect(opts DialOpts) (*Conn, error) {
 	var direct bool
 
 	if os.Getenv("RDC_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "hbb debug: punch result peerAddr=%v relay=%q uuid=%q signedPkLen=%d\n", pr.peerAddr, pr.relayServer, pr.uuid, len(pr.signedIDPk))
+		fmt.Fprintf(os.Stderr, "hbb debug: punch result peerAddr=%v relay=%q signedPkLen=%d\n", pr.peerAddr, pr.relayServer, len(pr.signedIDPk))
 	}
 
 	if !opts.ForceRelay && pr.peerAddr.IsValid() && pr.peerAddr.Port() > 0 {
@@ -412,15 +418,20 @@ func Connect(opts DialOpts) (*Conn, error) {
 		uuid := pr.uuid
 		signedIDPk := pr.signedIDPk
 		if uuid == "" {
-			rs, u, pk, rErr := requestRelayViaRendezvous(opts.Server, opts.PeerID, opts.Key, opts.Token, timeout)
+			rs, u, pk, rErr := requestRelayViaRendezvous(opts.Server, opts.PeerID, pr.relayServer, opts.Key, opts.Token, len(signedIDPk) > 0, timeout)
 			if rErr != nil {
 				return nil, rErr
 			}
-			relayServer = rs
+			if rs != "" {
+				relayServer = rs
+			}
 			uuid = u
 			if len(pk) > 0 {
 				signedIDPk = pk
 			}
+		}
+		if relayServer == "" {
+			return nil, errors.New("no relay server available")
 		}
 		sc, err = connectRelay(relayServer, opts.PeerID, uuid, opts.Key, opts.ConnType, timeout)
 		if err != nil {
@@ -430,6 +441,7 @@ func Connect(opts DialOpts) (*Conn, error) {
 	}
 
 	c := &Conn{sc: sc, opts: opts, peerID: opts.PeerID, direct: direct}
+	c.capturePeerSecrets()
 	if err := c.secureHandshake(pr.signedIDPk, opts.Key); err != nil {
 		c.Close()
 		return nil, err
@@ -466,7 +478,7 @@ func connectDirect(opts DialOpts, timeout time.Duration) (*Conn, error) {
 	}
 	addr := opts.PeerID
 	if _, _, err := net.SplitHostPort(addr); err != nil {
-		addr = net.JoinHostPort(addr, "21116")
+		addr = net.JoinHostPort(addr, "21118")
 	}
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
@@ -477,6 +489,7 @@ func connectDirect(opts DialOpts, timeout time.Duration) (*Conn, error) {
 	}
 	sc := NewSecureConn(conn)
 	c := &Conn{sc: sc, opts: opts, peerID: opts.PeerID, direct: true}
+	c.capturePeerSecrets()
 	if err := c.secureHandshake(nil, opts.Key); err != nil {
 		c.Close()
 		return nil, err
@@ -491,10 +504,14 @@ func minDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-// secureHandshake implements the SignedId/PublicKey exchange. If the peer
-// identity cannot be verified, it falls back to an insecure plaintext
-// connection (matching the reference client behaviour).
 func (c *Conn) secureHandshake(signedIDPk []byte, key string) error {
+	timeout := c.opts.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	if err := c.sc.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
 	rsPk, err := decodeRSKey(key)
 	if err != nil {
 		return err
@@ -502,19 +519,18 @@ func (c *Conn) secureHandshake(signedIDPk []byte, key string) error {
 
 	var peerSignPk []byte
 	if len(signedIDPk) > 0 {
-		if _, pk, vErr := VerifySignedID(signedIDPk, rsPk); vErr == nil {
-			peerSignPk = pk
-		} else if os.Getenv("RDC_DEBUG") != "" {
-			fmt.Fprintf(os.Stderr, "hbb debug: server blob verify failed: %v\n", vErr)
+		id, pk, vErr := VerifySignedID(signedIDPk, rsPk)
+		if vErr != nil || id != c.peerID {
+			return errors.New("hbb: invalid server-signed peer identity")
 		}
+		peerSignPk = pk
 	}
 
 	if len(peerSignPk) == 0 {
-		if os.Getenv("RDC_DEBUG") != "" {
-			fmt.Fprintln(os.Stderr, "hbb debug: no peer sign key, insecure fallback")
+		if !c.opts.Yes {
+			return errors.New("hbb: peer identity unavailable; refusing unencrypted connection (use --yes only for a trusted network)")
 		}
-		// send an empty message out in case server is setting up secure and
-		// waiting for first message
+		fmt.Fprintln(os.Stderr, "warning: connection is unencrypted and peer identity is unverified")
 		return c.sendMessage(&pb.Message{})
 	}
 
@@ -526,16 +542,16 @@ func (c *Conn) secureHandshake(signedIDPk []byte, key string) error {
 		return fmt.Errorf("hbb: read signed id: %w", err)
 	}
 	msg := &pb.Message{}
-	if err := proto.Unmarshal(raw, msg); err != nil {
+	if err := decodePeerMessage(raw, msg); err != nil {
 		return fmt.Errorf("hbb: parse message: %w", err)
 	}
 	sid := msg.GetSignedId()
 	if sid == nil {
-		return c.sendMessage(&pb.Message{})
+		return errors.New("hbb: expected signed peer identity")
 	}
 	id, theirPk, err := VerifySignedID(sid.GetId(), peerSignPk)
 	if err != nil || id != c.peerID {
-		return c.sendMessage(&pb.Message{})
+		return errors.New("hbb: invalid peer identity; refusing connection")
 	}
 
 	asym, sym, key32, err := CreateSymmetricKeyMsg(theirPk)
@@ -561,6 +577,9 @@ func (c *Conn) secureHandshake(signedIDPk []byte, key string) error {
 }
 
 func (c *Conn) sendMessage(msg *pb.Message) error {
+	if msg.GetLoginRequest() != nil {
+		c.capturePeerSecrets()
+	}
 	data, err := proto.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("hbb: marshal message: %w", err)
@@ -583,7 +602,7 @@ func (c *Conn) Recv() (*pb.Message, error) {
 		return nil, err
 	}
 	msg := &pb.Message{}
-	if err := proto.Unmarshal(raw, msg); err != nil {
+	if err := decodePeerMessage(raw, msg); err != nil {
 		return nil, fmt.Errorf("hbb: parse message: %w", err)
 	}
 	if os.Getenv("RDC_DEBUG") != "" {
@@ -680,17 +699,29 @@ func randomPeerID() string {
 
 // LoginSpec carries per-kind login details.
 type LoginSpec struct {
-	Host string // tunnel remote host
-	Port int32  // tunnel remote port
-	Dir  string // file transfer remote dir
+	Host       string // tunnel remote host
+	Port       int32  // tunnel remote port
+	Dir        string // file transfer remote dir
+	Option     *pb.OptionMessage
+	ShowHidden bool
 }
 
 // Login sends the LoginRequest for the given kind and waits for the peer's
 // LoginResponse, returning the peer info on success.
 func (c *Conn) Login(kind LoginKind, spec LoginSpec) (*pb.PeerInfo, error) {
+	c.capturePeerSecrets()
+	defer func() { c.opts.OTP = "" }()
+	timeout := c.opts.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	if err := c.sc.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	loginSent := false
 	// The peer sends Hash{challenge, salt} immediately after the secure
 	// handshake, before we send our login request.
-	for {
+	for received := 0; received < 128; received++ {
 		msg, err := c.Recv()
 		if err != nil {
 			return nil, err
@@ -698,12 +729,16 @@ func (c *Conn) Login(kind LoginKind, spec LoginSpec) (*pb.PeerInfo, error) {
 		switch u := msg.GetUnion().(type) {
 		case *pb.Message_Hash:
 			hash := u.Hash
+			if loginSent || hash.GetChallenge() == "" {
+				return nil, errors.New("hbb: missing or repeated login challenge")
+			}
 			lr := &pb.LoginRequest{
 				Username:   c.peerID,
 				MyId:       randomPeerID(),
 				MyName:     "rdcli",
 				MyPlatform: "Linux",
 				Version:    Version,
+				Option:     spec.Option,
 			}
 			if c.opts.Password != "" {
 				lr.Password = hashPassword(c.opts.Password, hash.GetSalt(), hash.GetChallenge())
@@ -711,7 +746,7 @@ func (c *Conn) Login(kind LoginKind, spec LoginSpec) (*pb.PeerInfo, error) {
 			switch kind {
 			case LoginFileTransfer:
 				lr.Union = &pb.LoginRequest_FileTransfer{
-					FileTransfer: &pb.FileTransfer{Dir: spec.Dir},
+					FileTransfer: &pb.FileTransfer{Dir: spec.Dir, ShowHidden: spec.ShowHidden},
 				}
 			case LoginTunnel:
 				lr.Union = &pb.LoginRequest_PortForward{
@@ -725,17 +760,29 @@ func (c *Conn) Login(kind LoginKind, spec LoginSpec) (*pb.PeerInfo, error) {
 			}); err != nil {
 				return nil, err
 			}
+			loginSent = true
 		case *pb.Message_LoginResponse:
 			lr := u.LoginResponse
+			if !loginSent {
+				return nil, errors.New("hbb: login response before login challenge")
+			}
 			if errMsg := lr.GetError(); errMsg != "" {
-				return nil, fmt.Errorf("%s", errMsg)
+				if err := c.HandleLoginError(errMsg); err != nil {
+					return nil, err
+				}
+				continue
 			}
 			pi := lr.GetPeerInfo()
 			if pi == nil {
 				return nil, errors.New("empty peer info in login response")
 			}
+			if err := c.sc.SetDeadline(time.Time{}); err != nil {
+				return nil, err
+			}
 			c.peerInfo = pi
 			return pi, nil
+		case *pb.Message_Auth_2Fa:
+			return nil, errors.New("hbb: unexpected peer 2FA message")
 		case *pb.Message_TestDelay:
 			td := u.TestDelay
 			if err := c.sendMessage(&pb.Message{
@@ -746,9 +793,47 @@ func (c *Conn) Login(kind LoginKind, spec LoginSpec) (*pb.PeerInfo, error) {
 		case *pb.Message_Misc:
 			misc := u.Misc
 			if cr := misc.GetCloseReason(); cr != "" {
-				return nil, fmt.Errorf("peer closed: %s", cr)
+				return nil, errors.New("hbb: peer closed connection during login")
 			}
 		}
+	}
+	return nil, errors.New("hbb: too many messages before login completed")
+}
+
+// HandleLoginError handles a LoginResponse error after a login request was sent.
+// A nil result means one OTP response was sent, not that login succeeded.
+func (c *Conn) HandleLoginError(message string) error {
+	c.capturePeerSecrets()
+	otp := c.opts.OTP
+	c.opts.OTP = ""
+	switch message {
+	case "2FA Required":
+		if c.otpSent {
+			return errors.New("hbb: repeated peer 2FA challenge; code will not be resent")
+		}
+		if otp == "" {
+			return errors.New("hbb: peer 2FA required; supply --otp or RDC_OTP")
+		}
+		if !c.sc.IsSecured() {
+			return errors.New("hbb: peer 2FA requires an authenticated encrypted connection; --yes cannot allow sending a code")
+		}
+		if len(otp) < 6 || len(otp) > 8 || strings.IndexFunc(otp, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			return errors.New("hbb: peer 2FA code must contain 6 to 8 ASCII digits")
+		}
+		c.otpSent = true
+		return c.sendMessage(&pb.Message{
+			Union: &pb.Message_Auth_2Fa{Auth_2Fa: &pb.Auth2FA{Code: otp}},
+		})
+	case "Wrong 2FA Code":
+		return errors.New("hbb: peer rejected 2FA code; reconnect with a fresh --otp or RDC_OTP")
+	case "Wrong Password":
+		return errors.New("hbb: Wrong Password")
+	case "Empty Password":
+		return errors.New("hbb: Empty Password")
+	case "No Password Access":
+		return errors.New("hbb: No Password Access")
+	default:
+		return errors.New("hbb: peer rejected login")
 	}
 }
 

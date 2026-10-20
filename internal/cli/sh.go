@@ -1,31 +1,34 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"time"
 
-	"rdcli/internal/hbb"
+	"github.com/4nkitd/rustdesk-cli/internal/hbb"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
-const (
-	oneShotMinWait = 1 * time.Second
-	oneShotIdle    = 300 * time.Millisecond
-)
+const oneShotCommandTimeout = 5 * time.Minute
 
 func newShCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sh [<ref>] [command]",
 		Short: "remote shell session or command execution",
+		Long:  "Open an interactive remote terminal, or run a command using POSIX sh on Linux/macOS.\nOne-shot completion and exit status are confirmed by the command, not output silence.",
 		RunE:  runSh,
 	}
-	cmd.Flags().Duration("idle", oneShotIdle, "one-shot idle timeout after output")
+	cmd.Flags().Duration("idle", 300*time.Millisecond, "ignored; completion requires a command status")
+	_ = cmd.Flags().MarkDeprecated("idle", "use --command-timeout; output silence no longer ends commands")
+	cmd.Flags().Duration("command-timeout", oneShotCommandTimeout, "maximum one-shot command duration after opening the terminal")
 	return cmd
 }
 
@@ -38,14 +41,21 @@ func runSh(cmd *cobra.Command, args []string) error {
 
 	if len(remArgs) > 0 {
 		command := strings.Join(remArgs, " ")
-		idle, _ := cmd.Flags().GetDuration("idle")
-		return runShOneShot(opts, command, idle)
+		timeout, _ := cmd.Flags().GetDuration("command-timeout")
+		if timeout <= 0 {
+			return usageErrorf("--command-timeout must be greater than zero")
+		}
+		return runShOneShotContext(cmd.Context(), opts, command, timeout, cmd.OutOrStdout())
 	}
 
-	return runShInteractive(opts)
+	return runShInteractiveContext(cmd.Context(), opts)
 }
 
 func runShInteractive(opts hbb.DialOpts) error {
+	return runShInteractiveContext(context.Background(), opts)
+}
+
+func runShInteractiveContext(ctx context.Context, opts hbb.DialOpts) error {
 	stdoutFd := int(os.Stdout.Fd())
 	cols, rows, err := term.GetSize(stdoutFd)
 	if err != nil || cols <= 0 || rows <= 0 {
@@ -53,42 +63,45 @@ func runShInteractive(opts hbb.DialOpts) error {
 		rows = 24
 	}
 
+	ts, err := hbb.OpenTerminal(opts, uint32(rows), uint32(cols))
+	if err != nil {
+		return err
+	}
+	defer ts.Close()
+	stop := context.AfterFunc(ctx, func() { ts.Close() })
+	defer stop()
 	stdinFd := int(os.Stdin.Fd())
 	oldState, err := term.MakeRaw(stdinFd)
 	if err == nil {
 		defer term.Restore(stdinFd, oldState)
 	}
 
-	ts, err := hbb.OpenTerminal(opts, uint32(rows), uint32(cols))
-	if err != nil {
-		return err
-	}
-	defer ts.Close()
-
 	sigCh := make(chan os.Signal, 1)
 	notifySigwinch(sigCh)
 	defer signal.Stop(sigCh)
+	done := make(chan struct{})
+	defer close(done)
 
 	go func() {
-		for range sigCh {
-			if c, r, err := term.GetSize(stdoutFd); err == nil && c > 0 && r > 0 {
-				_ = ts.Resize(uint32(r), uint32(c))
+		for {
+			select {
+			case <-done:
+				return
+			case <-sigCh:
+				if c, r, err := term.GetSize(stdoutFd); err == nil && c > 0 && r > 0 {
+					_ = ts.Resize(uint32(r), uint32(c))
+				}
 			}
 		}
 	}()
 
+	inputErr := make(chan error, 1)
+	inputCtx, cancelInput := context.WithCancel(ctx)
+	defer cancelInput()
 	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if n > 0 {
-				if _, werr := ts.Write(buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
+		if err := copyShInput(inputCtx, os.Stdin, ts); err != nil && err != io.EOF {
+			inputErr <- err
+			ts.Close()
 		}
 	}()
 
@@ -96,17 +109,38 @@ func runShInteractive(opts hbb.DialOpts) error {
 	for {
 		n, err := ts.Read(buf)
 		if n > 0 {
-			os.Stdout.Write(buf[:n])
+			if _, werr := os.Stdout.Write(buf[:n]); werr != nil {
+				return werr
+			}
 		}
 		if err != nil {
-			break
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			select {
+			case input := <-inputErr:
+				return input
+			default:
+			}
+			if err == io.EOF {
+				return nil
+			}
+			return err
 		}
 	}
-
-	return nil
 }
 
-func runShOneShot(opts hbb.DialOpts, command string, idle time.Duration) error {
+func runShOneShot(opts hbb.DialOpts, command string, timeout time.Duration) error {
+	return runShOneShotContext(context.Background(), opts, command, timeout, os.Stdout)
+}
+
+func runShOneShotContext(ctx context.Context, opts hbb.DialOpts, command string, timeout time.Duration, output io.Writer) error {
+	if timeout <= 0 {
+		return usageErrorf("--command-timeout must be greater than zero")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
 	if err != nil || cols <= 0 || rows <= 0 {
 		cols = 80
@@ -118,73 +152,19 @@ func runShOneShot(opts hbb.DialOpts, command string, idle time.Duration) error {
 		return err
 	}
 	defer ts.Close()
-
-	if _, err := ts.Write([]byte(command + "\n")); err != nil {
+	switch strings.ToLower(ts.Platform()) {
+	case "linux", "mac os", "macos":
+	default:
+		return fmt.Errorf("one-shot commands require a POSIX shell on Linux/macOS; peer platform is %q", ts.Platform())
+	}
+	if err := ts.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
-
-	if idle <= 0 {
-		idle = oneShotIdle
+	stop := context.AfterFunc(ctx, func() { ts.Close() })
+	defer stop()
+	err = executeShCommand(ts, output, command)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-
-	outCh := make(chan []byte, 100)
-	errCh := make(chan error, 1)
-
-	go func() {
-		for {
-			buf := make([]byte, 4096)
-			n, err := ts.Read(buf)
-			if n > 0 {
-				chunk := make([]byte, n)
-				copy(chunk, buf[:n])
-				outCh <- chunk
-			}
-			if err != nil {
-				errCh <- err
-				return
-			}
-		}
-	}()
-
-	start := time.Now()
-	firstOutput := false
-	var idleC <-chan time.Time
-	var idleTimer *time.Timer
-	armIdle := func() {
-		if idleTimer == nil {
-			idleTimer = time.NewTimer(idle)
-		} else {
-			if !idleTimer.Stop() {
-				select {
-				case <-idleTimer.C:
-				default:
-				}
-			}
-			idleTimer.Reset(idle)
-		}
-		idleC = idleTimer.C
-	}
-
-	for {
-		select {
-		case chunk := <-outCh:
-			os.Stdout.Write(chunk)
-			firstOutput = true
-			armIdle()
-		case <-errCh:
-			for {
-				select {
-				case chunk := <-outCh:
-					os.Stdout.Write(chunk)
-				default:
-					return nil
-				}
-			}
-		case <-idleC:
-			if firstOutput && time.Since(start) >= oneShotMinWait {
-				return nil
-			}
-			idleC = nil
-		}
-	}
+	return err
 }

@@ -1,6 +1,6 @@
 syntax = "proto3";
 package hbb;
-option go_package = "rdcli/internal/hbb/proto";
+option go_package = "github.com/4nkitd/rustdesk-cli/internal/hbb/proto";
 
 message RegisterPeer { string id = 1; int32 serial = 2; }
 enum ConnType { DEFAULT_CONN = 0; FILE_TRANSFER = 1; PORT_FORWARD = 2; RDP = 3; VIEW_CAMERA = 4; TERMINAL = 5; }

@@ -11,7 +11,7 @@ import (
 	"golang.org/x/crypto/nacl/secretbox"
 	"google.golang.org/protobuf/proto"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 type KeyPair struct {

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"rdcli/internal/config"
+	"github.com/4nkitd/rustdesk-cli/internal/config"
 )
 
 func TestParsePeerFile(t *testing.T) {
@@ -41,6 +41,33 @@ remote_dir = '{"anki7":"C:\\Users\\anki7\\Desktop"}'
 	}
 	if info["platform"] != "Windows" {
 		t.Errorf("platform got %q, want %q", info["platform"], "Windows")
+	}
+}
+
+func TestParsePeerFileQuotedCharArray(t *testing.T) {
+	dir := t.TempDir()
+	tomlContent := `password = [
+    '0',
+    '0',
+    'A',
+    'e',
+]
+[info]
+username = "anki7"
+hostname = "kali"
+platform = "Windows"
+`
+	peerFile := filepath.Join(dir, "1492090403.toml")
+	if err := os.WriteFile(peerFile, []byte(tomlContent), 0o600); err != nil {
+		t.Fatalf("write peer file: %v", err)
+	}
+
+	_, password, _, _, err := parsePeerFile(peerFile)
+	if err != nil {
+		t.Fatalf("parsePeerFile failed: %v", err)
+	}
+	if password != "00Ae" {
+		t.Errorf("password got %q, want %q", password, "00Ae")
 	}
 }
 

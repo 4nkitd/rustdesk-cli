@@ -1,7 +1,7 @@
 # build artifacts
-rdcli
-mockrv
-mockapi
+/rdcli
+/mockrv
+/mockapi
 dist/
 *.exe
 *.test

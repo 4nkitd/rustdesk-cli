@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"rdcli/internal/config"
-	"rdcli/internal/hbb"
+	"github.com/4nkitd/rustdesk-cli/internal/config"
+	"github.com/4nkitd/rustdesk-cli/internal/hbb"
 
 	"github.com/spf13/cobra"
 )

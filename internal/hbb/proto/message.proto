@@ -1,6 +1,6 @@
 syntax = "proto3";
 package hbb;
-option go_package = "rdcli/internal/hbb/proto";
+option go_package = "github.com/4nkitd/rustdesk-cli/internal/hbb/proto";
 
 message EncodedVideoFrame {
   bytes data = 1;

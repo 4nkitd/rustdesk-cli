@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"rdcli/internal/config"
+	"github.com/4nkitd/rustdesk-cli/internal/config"
 )
 
 type Device struct {

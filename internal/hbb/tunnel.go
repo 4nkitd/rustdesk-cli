@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 // Tunnel runs a single port-forward session: it logs in to the peer as a
@@ -30,31 +29,21 @@ func NewTunnel(opts DialOpts, host string, port int32) (*Tunnel, error) {
 	return &Tunnel{conn: c}, nil
 }
 
+// Pipe owns both streams. Closing local must interrupt pending reads and writes.
 func (t *Tunnel) Pipe(local io.ReadWriteCloser) error {
-	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
-	wg.Add(2)
 	go func() {
-		defer wg.Done()
 		_, err := io.Copy(local, t.conn.sc)
 		errCh <- copyErr(err, "peer")
 	}()
 	go func() {
-		defer wg.Done()
 		_, err := io.Copy(t.conn.sc, local)
 		errCh <- copyErr(err, "local")
 	}()
-	wg.Wait()
-	close(errCh)
-	var first error
-	for err := range errCh {
-		if err != nil && first == nil {
-			first = err
-		}
-	}
-	if first == nil {
-		return errors.New("tunnel closed")
-	}
+	first := <-errCh
+	_ = t.Close()
+	_ = local.Close()
+	<-errCh
 	return first
 }
 

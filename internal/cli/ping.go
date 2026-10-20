@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"rdcli/internal/hbb"
+	"github.com/4nkitd/rustdesk-cli/internal/hbb"
 
 	"github.com/spf13/cobra"
 )

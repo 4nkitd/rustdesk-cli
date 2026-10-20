@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"rdcli/internal/config"
+	"github.com/4nkitd/rustdesk-cli/internal/config"
 
 	"github.com/spf13/cobra"
 )
@@ -231,6 +231,10 @@ func parseBytes(s string, out *[]byte) {
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
 		if p == "" {
+			continue
+		}
+		if quoted, err := strconv.Unquote(p); err == nil && len(quoted) == 1 {
+			*out = append(*out, quoted[0])
 			continue
 		}
 		val, err := strconv.Atoi(p)

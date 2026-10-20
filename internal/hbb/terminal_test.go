@@ -14,7 +14,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 func runMockTerminalPeer(t *testing.T, peerEdPriv ed25519.PrivateKey, peerID, password, version string) (*netip.AddrPort, chan struct{}) {
@@ -78,7 +78,7 @@ func runMockTerminalPeer(t *testing.T, peerEdPriv ed25519.PrivateKey, peerID, pa
 		pi := &pb.Message{Union: &pb.Message_LoginResponse{
 			LoginResponse: &pb.LoginResponse{
 				Union: &pb.LoginResponse_PeerInfo{
-					PeerInfo: &pb.PeerInfo{Version: version, Platform: "Linux", Hostname: "mock"},
+					PeerInfo: &pb.PeerInfo{Version: version, Platform: "Linux", Hostname: "mock", Features: &pb.Features{Terminal: versionAtLeast(version, "1.4.1")}},
 				},
 			},
 		}}

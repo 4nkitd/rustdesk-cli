@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"rdcli/internal/config"
+	"github.com/4nkitd/rustdesk-cli/internal/config"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 func TestLocalSourceListSorted(t *testing.T) {
@@ -97,18 +97,22 @@ func TestLocalSourceAddRemoveTagPersists(t *testing.T) {
 func TestCheckOnlineBatchBitDecoding(t *testing.T) {
 	peers := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 
-	base, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("base listen failed: %v", err)
-	}
-	serverPort := base.Addr().(*net.TCPAddr).Port
-	base.Close()
-
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", serverPort-1))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Listen failed: %v", err)
 	}
+	for attempt := 0; listener.Addr().(*net.TCPAddr).Port == 65535; attempt++ {
+		listener.Close()
+		if attempt == 15 {
+			t.Fatal("could not reserve an online endpoint below port 65535")
+		}
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Listen failed: %v", err)
+		}
+	}
 	defer listener.Close()
+	serverPort := listener.Addr().(*net.TCPAddr).Port + 1
 	serverAddr := fmt.Sprintf("127.0.0.1:%d", serverPort)
 
 	go func() {

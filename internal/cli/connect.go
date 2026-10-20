@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"rdcli/internal/config"
-	"rdcli/internal/hbb"
-	pb "rdcli/internal/hbb/proto"
+	"github.com/4nkitd/rustdesk-cli/internal/config"
+	"github.com/4nkitd/rustdesk-cli/internal/hbb"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 func newConnectCmd() *cobra.Command {
@@ -34,23 +34,20 @@ func newDisconnectCmd() *cobra.Command {
 
 func runConnect(cmd *cobra.Command, args []string) error {
 	ref := args[0]
-	password, _ := cmd.Flags().GetString("password")
-	if password == "" {
-		password = os.Getenv("RDC_PASSWORD")
-	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 
-	// Resolve to find the underlying ID
-	id, _, _ := ResolveRef(cfg, ref)
-	cfg.SetPeersPassword(id, password)
-
-	// If this is a new peer (ref is raw ID, not in config), add it
-	if _, ok := cfg.Peers[id]; !ok {
-		cfg.SetPeersPassword(id, password)
+	id, _, err := ResolveRef(cfg, ref)
+	if err != nil {
+		return err
 	}
+	password, _ := cmd.Flags().GetString("password")
+	if password == "" {
+		password = os.Getenv("RDC_PASSWORD")
+	}
+	cfg.SetPeersPassword(id, password)
 
 	if err := cfg.Save(); err != nil {
 		return err
@@ -66,7 +63,10 @@ func runDisconnect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	id, _, _ := ResolveRef(cfg, ref)
+	id, _, err := ResolveRef(cfg, ref)
+	if err != nil {
+		return err
+	}
 	cfg.SetPeersPassword(id, "")
 
 	if err := cfg.Save(); err != nil {
@@ -84,6 +84,7 @@ func dialOpts(cmd *cobra.Command, peerID, password string, connType pb.ConnType)
 		Server:     getServerFlag(cmd),
 		PeerID:     peerID,
 		Password:   password,
+		OTP:        getOTPFlag(cmd),
 		Key:        getKeyFlag(cmd),
 		Token:      getTokenFlag(cmd),
 		ForceRelay: isRelayFlag(cmd),

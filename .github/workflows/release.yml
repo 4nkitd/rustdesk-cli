@@ -6,60 +6,156 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
   build:
+    needs: test
+    permissions:
+      contents: read
     name: build-${{ matrix.goos }}-${{ matrix.goarch }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
-          - goos: linux
+          - os: ubuntu-24.04
+            goos: linux
             goarch: amd64
-          - goos: linux
+          - os: ubuntu-24.04-arm
+            goos: linux
             goarch: arm64
-          - goos: darwin
+          - os: macos-15-intel
+            goos: darwin
             goarch: amd64
-          - goos: darwin
+          - os: macos-15
+            goos: darwin
             goarch: arm64
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+      VERSION: ${{ github.ref_name }}
+      BINARY: rdcli-${{ matrix.goos }}-${{ matrix.goarch }}
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          go-version: "1.25"
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.27.3"
+
+      - name: Validate release target
+        env:
+          TARGET_OS: ${{ matrix.goos }}
+          TARGET_ARCH: ${{ matrix.goarch }}
+        run: |
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          test "$(go env GOHOSTOS)" = "$TARGET_OS"
+          test "$(go env GOHOSTARCH)" = "$TARGET_ARCH"
 
       - name: Build
+        env:
+          CGO_ENABLED: "0"
         run: |
-          ext=""
-          if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-            go build -trimpath -ldflags "-s -w -X rdcli/internal/cli.version=${{ github.ref_name }}" \
-            -o dist/rdcli-${{ matrix.goos }}-${{ matrix.goarch }}$ext ./cmd/rdcli
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X github.com/4nkitd/rustdesk-cli/internal/cli.version=$VERSION" \
+            -o "dist/$BINARY" ./cmd/rdcli
+
+      - name: Smoke test
+        run: |
+          test "$("./dist/$BINARY" version)" = "rdcli $VERSION"
+          "./dist/$BINARY" --help
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: rdcli-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/rdcli-*
+          name: ${{ env.BINARY }}
+          path: dist/${{ env.BINARY }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Bundle licenses
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          git ls-files --error-unmatch LICENSE
+          test -s LICENSE
+          test -n "$(git ls-files -- 'THIRD_PARTY_NOTICES' 'THIRD_PARTY_NOTICES.*')"
+          git ls-files -z -- LICENSE 'LICENSE.*' 'THIRD_PARTY_NOTICES' 'THIRD_PARTY_NOTICES.*' \
+            'licenses/**' 'third_party/licenses/**' > "$RUNNER_TEMP/license-files"
+          while IFS= read -r -d '' file; do
+            test -s "$file"
+          done < "$RUNNER_TEMP/license-files"
+          tar -czf dist/rdcli-licenses.tar.gz --null -T "$RUNNER_TEMP/license-files"
+
+      - name: Upload licenses
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rdcli-licenses
+          path: dist/rdcli-licenses.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ github.ref_name }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: rdcli-*
           path: dist
           merge-multiple: true
 
-      - name: Checksums
+      - name: Verify artifacts and generate checksums
+        working-directory: dist
+        shell: bash
         run: |
-          cd dist
-          sha256sum * > checksums.txt
+          files=(rdcli-darwin-amd64 rdcli-darwin-arm64 rdcli-linux-amd64 rdcli-linux-arm64 rdcli-licenses.tar.gz)
+          test "$(find . -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq "${#files[@]}"
+          for file in "${files[@]}"; do
+            test -s "$file"
+          done
+          sha256sum "${files[@]}" > checksums.txt
+          sha256sum --check checksums.txt
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          awk -v version="$VERSION" '
+            $0 == "## " version { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          grep -q '[^[:space:]]' "$RUNNER_TEMP/release-notes.md"
+          flags=()
+          if [[ "$VERSION" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$VERSION" --verify-tag --draft --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --title "$VERSION" "${flags[@]}" dist/rdcli-* dist/checksums.txt
+          gh release edit "$VERSION" --draft=false

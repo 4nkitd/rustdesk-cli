@@ -13,7 +13,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 func runMockFilePeer(t *testing.T, peerEdPriv ed25519.PrivateKey, peerID, version string, handler func(sc *SecureConn)) (*netip.AddrPort, chan struct{}) {
@@ -253,6 +253,10 @@ func TestFileSendNoOverwrite(t *testing.T) {
 					receivedData = append(receivedData, data...)
 				}
 				if fr.GetDone() != nil {
+					if fr.GetDone().GetFileNum() != 1 {
+						t.Errorf("expected job-level Done with file_num=1")
+					}
+					_ = writeProtoMessage(sc, &pb.Message{Union: &pb.Message_FileResponse{FileResponse: fr}})
 					return
 				}
 			}
@@ -296,6 +300,11 @@ func TestFileSendWithOverwrite(t *testing.T) {
 			return
 		}
 		req := fa.GetReceive()
+		initial, err := readProtoMessage(sc)
+		if err != nil || initial.GetFileResponse().GetDigest() == nil || initial.GetFileResponse().GetDigest().GetFileSize() != uint64(len(content)) {
+			t.Errorf("missing upload source digest: %v", err)
+			return
+		}
 		digest := &pb.Message{
 			Union: &pb.Message_FileResponse{
 				FileResponse: &pb.FileResponse{
@@ -344,6 +353,10 @@ func TestFileSendWithOverwrite(t *testing.T) {
 				receivedData = append(receivedData, data...)
 			}
 			if fr.GetDone() != nil {
+				if fr.GetDone().GetFileNum() != 1 {
+					t.Errorf("expected job-level Done with file_num=1")
+				}
+				_ = writeProtoMessage(sc, &pb.Message{Union: &pb.Message_FileResponse{FileResponse: fr}})
 				t.Logf("DEBUG got done file_num=%d", fr.GetDone().GetFileNum())
 				return
 			}
@@ -387,6 +400,11 @@ func TestFileSendSkip(t *testing.T) {
 			return
 		}
 		req := fa.GetReceive()
+		initial, err := readProtoMessage(sc)
+		if err != nil || initial.GetFileResponse().GetDigest() == nil {
+			t.Errorf("missing upload source digest: %v", err)
+			return
+		}
 		skip := &pb.Message{
 			Union: &pb.Message_FileAction{
 				FileAction: &pb.FileAction{
@@ -407,8 +425,18 @@ func TestFileSendSkip(t *testing.T) {
 			if err != nil {
 				return
 			}
-			if fr := msg2.GetFileResponse(); fr != nil && fr.GetDone() != nil {
-				return
+			if fr := msg2.GetFileResponse(); fr != nil {
+				if fr.GetBlock() != nil {
+					t.Error("sent data for skipped file")
+					return
+				}
+				if fr.GetDone() != nil {
+					if fr.GetDone().GetFileNum() != 1 {
+						t.Errorf("expected job-level Done with file_num=1")
+					}
+					_ = writeProtoMessage(sc, &pb.Message{Union: &pb.Message_FileResponse{FileResponse: fr}})
+					return
+				}
 			}
 		}
 	})
@@ -445,6 +473,7 @@ func TestFileReceiveWithOverwrite(t *testing.T) {
 				FileResponse: &pb.FileResponse{
 					Union: &pb.FileResponse_Dir{
 						Dir: &pb.FileDirectory{
+							Id: reqID,
 							Entries: []*pb.FileEntry{
 								{Name: "received.txt", Size: uint64(len(content)), EntryType: pb.FileType_File},
 							},
@@ -459,7 +488,7 @@ func TestFileReceiveWithOverwrite(t *testing.T) {
 			Union: &pb.Message_FileResponse{
 				FileResponse: &pb.FileResponse{
 					Union: &pb.FileResponse_Digest{
-						Digest: &pb.FileTransferDigest{Id: reqID, FileNum: 0, IsUpload: false},
+						Digest: &pb.FileTransferDigest{Id: reqID, FileNum: 0, IsUpload: false, FileSize: uint64(len(content))},
 					},
 				},
 			},
@@ -537,6 +566,7 @@ func TestFileReceiveDir(t *testing.T) {
 				FileResponse: &pb.FileResponse{
 					Union: &pb.FileResponse_Dir{
 						Dir: &pb.FileDirectory{
+							Id: reqID,
 							Entries: []*pb.FileEntry{
 								{Name: "a.txt", Size: uint64(len(contentA)), EntryType: pb.FileType_File},
 								{Name: "sub/b.txt", Size: uint64(len(contentB)), EntryType: pb.FileType_File},
@@ -624,6 +654,7 @@ func TestFileReceiveSkipIdentical(t *testing.T) {
 				FileResponse: &pb.FileResponse{
 					Union: &pb.FileResponse_Dir{
 						Dir: &pb.FileDirectory{
+							Id: reqID,
 							Entries: []*pb.FileEntry{
 								{Name: "same.txt", Size: uint64(len(content)), ModifiedTime: uint64(mt.Unix()), EntryType: pb.FileType_File},
 							},
@@ -680,7 +711,7 @@ func TestFileReceiveSkipIdentical(t *testing.T) {
 	<-done
 }
 
-func TestFileSendResumeOffset(t *testing.T) {
+func TestFileSendRestartsUnverifiedUploadPrefix(t *testing.T) {
 	tmpDir := t.TempDir()
 	localFile := filepath.Join(tmpDir, "resume.bin")
 	content := []byte("partial resume test payload that is long enough")
@@ -702,13 +733,18 @@ func TestFileSendResumeOffset(t *testing.T) {
 			return
 		}
 		req := fa.GetReceive()
+		initial, err := readProtoMessage(sc)
+		if err != nil || initial.GetFileResponse().GetDigest() == nil {
+			t.Errorf("missing upload source digest: %v", err)
+			return
+		}
 		digest := &pb.Message{
 			Union: &pb.Message_FileResponse{
 				FileResponse: &pb.FileResponse{
 					Union: &pb.FileResponse_Digest{
 						Digest: &pb.FileTransferDigest{
 							Id: req.GetId(), FileNum: 0, IsUpload: true, IsResume: true,
-							IsIdentical: true, TransferredSize: 12,
+							IsIdentical: true, TransferredSize: 1<<32 + 12,
 						},
 					},
 				},
@@ -753,6 +789,10 @@ func TestFileSendResumeOffset(t *testing.T) {
 				receivedData = append(receivedData, data...)
 			}
 			if fr.GetDone() != nil {
+				if fr.GetDone().GetFileNum() != 1 {
+					t.Errorf("expected job-level Done with file_num=1")
+				}
+				_ = writeProtoMessage(sc, &pb.Message{Union: &pb.Message_FileResponse{FileResponse: fr}})
 				t.Logf("DEBUG got done file_num=%d", fr.GetDone().GetFileNum())
 				return
 			}
@@ -769,10 +809,10 @@ func TestFileSendResumeOffset(t *testing.T) {
 	}
 	ft.Close()
 	<-done
-	if confirmOffset != 12 {
-		t.Fatalf("expected resume confirm offset 12, got %d", confirmOffset)
+	if confirmOffset != 0 {
+		t.Fatalf("expected restart offset 0, got %d", confirmOffset)
 	}
-	if string(receivedData) != string(content[12:]) {
-		t.Fatalf("resume data mismatch: got %q, want %q", string(receivedData), string(content[12:]))
+	if string(receivedData) != string(content) {
+		t.Fatalf("restart data mismatch: got %q, want %q", string(receivedData), string(content))
 	}
 }

@@ -1,5 +1,3 @@
-//go:build !windows
-
 package hbb
 
 import (
@@ -7,25 +5,18 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
-	"syscall"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
-// dialPunch attempts a TCP simultaneous-open hole punch toward the peer from
-// the same local address used for the rendezvous connection. It falls back to
-// a plain dial (any local address) if the local bind fails.
 func dialPunch(local, peer netip.AddrPort, timeout time.Duration) (net.Conn, error) {
-	if local.IsValid() && local.Port() > 0 {
-		conn, err := dialPunchLinux(local, peer, timeout)
-		if err == nil {
-			return conn, nil
-		}
+	d := net.Dialer{Timeout: timeout, Control: reuseControl}
+	if local.IsValid() && local.Port() > 0 && local.Addr().Unmap().Is4() == peer.Addr().Unmap().Is4() {
+		d.LocalAddr = net.TCPAddrFromAddrPort(local)
 	}
-	d := net.Dialer{Timeout: timeout}
 	return d.Dial("tcp", peer.String())
 }
 
@@ -67,16 +58,18 @@ func TestNATType(server string, timeout time.Duration) (pb.NatType, error) {
 		if err != nil {
 			return pb.NatType_UNKNOWN_NAT, fmt.Errorf("hbb: nat test connect %s: %w", target, err)
 		}
-		conn.SetDeadline(time.Now().Add(timeout))
+		// Keep the source port reserved until both probes finish.
+		defer conn.Close()
+		if timeout > 0 {
+			_ = conn.SetDeadline(time.Now().Add(timeout))
+		}
 		if i == 0 {
 			local = conn.LocalAddr().(*net.TCPAddr)
 		}
-		if _, err := conn.Write(Encode(req)); err != nil {
-			conn.Close()
+		if _, err := writeFull(conn, Encode(req)); err != nil {
 			return pb.NatType_UNKNOWN_NAT, fmt.Errorf("hbb: nat test request: %w", err)
 		}
 		resp, err := readRendezvousMessage(conn)
-		conn.Close()
 		if err != nil {
 			return pb.NatType_UNKNOWN_NAT, fmt.Errorf("hbb: nat test response: %w", err)
 		}
@@ -97,15 +90,4 @@ func TestNATType(server string, timeout time.Duration) (pb.NatType, error) {
 		return pb.NatType_ASYMMETRIC, nil
 	}
 	return pb.NatType_SYMMETRIC, nil
-}
-
-func reuseControl(network, address string, c syscall.RawConn) error {
-	var setErr error
-	err := c.Control(func(fd uintptr) {
-		setErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-	})
-	if err != nil {
-		return err
-	}
-	return setErr
 }

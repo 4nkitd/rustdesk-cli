@@ -1,4 +1,4 @@
-module rdcli
+module github.com/4nkitd/rustdesk-cli
 
 go 1.25.6
 

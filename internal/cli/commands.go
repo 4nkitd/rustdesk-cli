@@ -24,6 +24,16 @@ func NewRootCmd() *cobra.Command {
 		newTagCmd(),
 		newImportGuiCmd(),
 		newImportCmd(),
+		newClipboardCmd(),
+		newInfoCmd(),
+		newDoctorCmd(),
+		newMkdirCmd(),
+		newRmCmd(),
+		newRenameCmd(),
+		newScreenshotCmd(),
 	)
+	root.InitDefaultHelpCmd()
+	root.InitDefaultCompletionCmd()
+	configureUsageErrors(root)
 	return root
 }

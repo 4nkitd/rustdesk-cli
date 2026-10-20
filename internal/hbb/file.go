@@ -1,7 +1,6 @@
 package hbb
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,16 +8,21 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 const (
-	fileBlockSize       = 64 * 1024
-	maxDecompressedSize = 256 * 1024 * 1024
+	fileBlockSize            = 64 * 1024
+	maxDecompressedSize      = 256 * 1024 * 1024
+	maxTransferListEntries   = 100000
+	maxTransferListPathBytes = 16 << 20
+	maxTransferPathBytes     = 4096
+	maxTransferDepth         = 64
 )
 
 var (
@@ -34,7 +38,23 @@ type ProgressFunc func(filesDone, filesTotal int, doneBytes, totalBytes int64)
 type FileTransfer struct {
 	conn             *Conn
 	overwriteEnabled bool
+	resumeEnabled    bool
 	nextID           int32
+	policy           TransferPolicy
+}
+
+type TransferPolicy struct {
+	Existing      string
+	Resume        bool
+	IncludeHidden bool
+}
+
+func (ft *FileTransfer) SetPolicy(policy TransferPolicy) error {
+	if policy.Existing != "" && policy.Existing != "error" && policy.Existing != "overwrite" && policy.Existing != "skip" {
+		return fmt.Errorf("invalid existing-file policy %q", policy.Existing)
+	}
+	ft.policy = policy
+	return nil
 }
 
 // NewFileTransfer connects to the peer with a file-transfer login. dir is the
@@ -53,6 +73,7 @@ func NewFileTransfer(opts DialOpts, dir string) (*FileTransfer, error) {
 	return &FileTransfer{
 		conn:             c,
 		overwriteEnabled: versionAtLeast(pi.GetVersion(), "1.1.10"),
+		resumeEnabled:    versionAtLeast(pi.GetVersion(), "1.4.2"),
 		nextID:           1,
 	}, nil
 }
@@ -68,32 +89,57 @@ func (ft *FileTransfer) nextJobID() int32 {
 }
 
 func (ft *FileTransfer) sendAction(a *pb.FileAction) error {
-	return ft.conn.Send(&pb.Message{Union: &pb.Message_FileAction{FileAction: a}})
+	return ft.sendTransferMessage(&pb.Message{Union: &pb.Message_FileAction{FileAction: a}})
+}
+
+func (ft *FileTransfer) transferTimeout() time.Duration {
+	if ft.conn.opts.Timeout > 0 {
+		return ft.conn.opts.Timeout
+	}
+	return 10 * time.Second
+}
+
+func (ft *FileTransfer) sendTransferMessage(msg *pb.Message) error {
+	if err := ft.conn.sc.SetWriteDeadline(time.Now().Add(ft.transferTimeout())); err != nil {
+		return err
+	}
+	defer ft.conn.sc.SetWriteDeadline(time.Time{})
+	return ft.conn.Send(msg)
 }
 
 func (ft *FileTransfer) sendBlock(b *pb.FileTransferBlock) error {
-	return ft.conn.Send(&pb.Message{Union: &pb.Message_FileResponse{FileResponse: &pb.FileResponse{
+	return ft.sendTransferMessage(&pb.Message{Union: &pb.Message_FileResponse{FileResponse: &pb.FileResponse{
 		Union: &pb.FileResponse_Block{Block: b},
 	}}})
 }
 
 func (ft *FileTransfer) sendDone(id int32, fileNum int32) error {
-	return ft.conn.Send(&pb.Message{Union: &pb.Message_FileResponse{FileResponse: &pb.FileResponse{
+	return ft.sendTransferMessage(&pb.Message{Union: &pb.Message_FileResponse{FileResponse: &pb.FileResponse{
 		Union: &pb.FileResponse_Done{Done: &pb.FileTransferDone{Id: id, FileNum: fileNum}},
 	}}})
 }
 
 // ReadDir lists a remote directory.
 func (ft *FileTransfer) ReadDir(path string) (*pb.FileDirectory, error) {
-	if err := ft.sendAction(&pb.FileAction{
+	if err := ft.conn.sc.SetDeadline(time.Now().Add(ft.transferTimeout())); err != nil {
+		return nil, err
+	}
+	defer ft.conn.sc.SetDeadline(time.Time{})
+	if err := ft.conn.Send(&pb.Message{Union: &pb.Message_FileAction{FileAction: &pb.FileAction{
 		Union: &pb.FileAction_ReadDir{ReadDir: &pb.ReadDir{Path: path}},
-	}); err != nil {
+	}}}); err != nil {
 		return nil, err
 	}
 	for {
 		msg, err := ft.conn.Recv()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read directory response: %w", err)
+		}
+		if td := msg.GetTestDelay(); td != nil {
+			if err := ft.conn.Send(&pb.Message{Union: &pb.Message_TestDelay{TestDelay: td}}); err != nil {
+				return nil, err
+			}
+			continue
 		}
 		fr := msg.GetFileResponse()
 		if fr == nil {
@@ -101,9 +147,13 @@ func (ft *FileTransfer) ReadDir(path string) (*pb.FileDirectory, error) {
 		}
 		switch u := fr.GetUnion().(type) {
 		case *pb.FileResponse_Dir:
+			var budget transferListBudget
+			if err := budget.addDirectory(u.Dir); err != nil {
+				return nil, err
+			}
 			return u.Dir, nil
 		case *pb.FileResponse_Error:
-			return nil, errors.New(u.Error.GetError())
+			return nil, errors.New(ft.conn.PeerText(u.Error.GetError()))
 		default:
 			return nil, fmt.Errorf("unexpected file response %T", u)
 		}
@@ -113,15 +163,25 @@ func (ft *FileTransfer) ReadDir(path string) (*pb.FileDirectory, error) {
 // CreateDir creates a remote directory.
 func (ft *FileTransfer) CreateDir(path string) error {
 	id := ft.nextJobID()
-	if err := ft.sendAction(&pb.FileAction{
+	if err := ft.conn.sc.SetDeadline(time.Now().Add(ft.transferTimeout())); err != nil {
+		return err
+	}
+	defer ft.conn.sc.SetDeadline(time.Time{})
+	if err := ft.conn.Send(&pb.Message{Union: &pb.Message_FileAction{FileAction: &pb.FileAction{
 		Union: &pb.FileAction_Create{Create: &pb.FileDirCreate{Id: id, Path: path}},
-	}); err != nil {
+	}}}); err != nil {
 		return err
 	}
 	for {
 		msg, err := ft.conn.Recv()
 		if err != nil {
-			return err
+			return fmt.Errorf("create directory response: %w", err)
+		}
+		if td := msg.GetTestDelay(); td != nil {
+			if err := ft.conn.Send(&pb.Message{Union: &pb.Message_TestDelay{TestDelay: td}}); err != nil {
+				return err
+			}
+			continue
 		}
 		fr := msg.GetFileResponse()
 		if fr == nil {
@@ -129,9 +189,13 @@ func (ft *FileTransfer) CreateDir(path string) error {
 		}
 		switch u := fr.GetUnion().(type) {
 		case *pb.FileResponse_Done:
-			return nil
+			if u.Done.GetId() == id {
+				return nil
+			}
 		case *pb.FileResponse_Error:
-			return errors.New(u.Error.GetError())
+			if u.Error.GetId() == id {
+				return errors.New(ft.conn.PeerText(u.Error.GetError()))
+			}
 		}
 	}
 }
@@ -140,15 +204,91 @@ type job struct {
 	localPath  string
 	remotePath string
 	files      []*pb.FileEntry
+	identities []os.FileInfo
+	source     *uploadSource
+}
+
+type uploadSource struct {
+	root        *os.Root
+	directories map[string]os.FileInfo
+}
+
+type uploadDirectory struct {
+	path string
+	info os.FileInfo
+}
+
+type transferListBudget struct {
+	entries   int
+	pathBytes int
+}
+
+func (b *transferListBudget) addPath(name string) error {
+	if len(name) > maxTransferPathBytes {
+		return errors.New("transfer list path exceeds length limit")
+	}
+	depth := 0
+	inComponent := false
+	for _, c := range name {
+		if c == '/' || c == '\\' {
+			inComponent = false
+		} else if !inComponent {
+			depth++
+			inComponent = true
+		}
+	}
+	if depth > maxTransferDepth {
+		return errors.New("transfer list path exceeds depth limit")
+	}
+	if len(name) > maxTransferListPathBytes-b.pathBytes {
+		return errors.New("transfer list exceeds path-byte limit")
+	}
+	b.pathBytes += len(name)
+	return nil
+}
+
+func (b *transferListBudget) addEntry(name string) error {
+	if b.entries >= maxTransferListEntries {
+		return errors.New("transfer list exceeds entry limit")
+	}
+	if err := b.addPath(name); err != nil {
+		return err
+	}
+	b.entries++
+	return nil
+}
+
+func (b *transferListBudget) addDirectory(dir *pb.FileDirectory) error {
+	if err := b.addPath(dir.GetPath()); err != nil {
+		return err
+	}
+	if len(dir.GetEntries()) > maxTransferListEntries-b.entries {
+		return errors.New("transfer list exceeds entry limit")
+	}
+	for _, entry := range dir.GetEntries() {
+		if err := b.addEntry(entry.GetName()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Send uploads localPath to remoteDir. Directories are walked recursively
 // when recursive is true; each remote directory is created first and files
 // are pushed with one receive job per directory.
 func (ft *FileTransfer) Send(localPath, remoteDir string, recursive bool, progress ProgressFunc) error {
+	if ft.policy.Resume {
+		return errors.New("verified resume is supported for downloads only")
+	}
+	if ft.policy.Existing == "skip" || ft.policy.Existing == "error" {
+		return errors.New("uploads require overwrite permission: peer protocol cannot guarantee atomic no-clobber or skip")
+	}
 	jobs, err := ft.buildSendJobs(localPath, remoteDir, recursive)
 	if err != nil {
 		return err
+	}
+	if len(jobs) > 0 {
+		defer jobs[0].source.root.Close()
 	}
 	if len(jobs) == 0 {
 		return nil
@@ -162,6 +302,9 @@ func (ft *FileTransfer) Send(localPath, remoteDir string, recursive bool, progre
 	for _, j := range jobs {
 		totalFiles += len(j.files)
 		for _, f := range j.files {
+			if f.GetSize() > uint64(^uint64(0)>>1)-uint64(totalBytes) {
+				return errors.New("upload size exceeds supported limit")
+			}
 			totalBytes += int64(f.GetSize())
 		}
 	}
@@ -188,44 +331,172 @@ func (ft *FileTransfer) Send(localPath, remoteDir string, recursive bool, progre
 	return nil
 }
 
+// Returned jobs share one root handle, which the caller closes after the last job.
 func (ft *FileTransfer) buildSendJobs(localPath, remoteDir string, recursive bool) ([]job, error) {
-	fi, err := os.Stat(localPath)
+	var budget transferListBudget
+	if err := budget.addPath(localPath); err != nil {
+		return nil, err
+	}
+	if err := budget.addPath(remoteDir); err != nil {
+		return nil, err
+	}
+	fi, err := os.Lstat(localPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", localPath, err)
 	}
-	if !fi.IsDir() {
-		return []job{{localPath: filepath.Dir(localPath), remotePath: remoteDir, files: []*pb.FileEntry{localEntry(localPath, fi)}}}, nil
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("upload source is a symlink; select its target explicitly: %s", localPath)
 	}
-	if !recursive {
+	if !fi.IsDir() && !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("upload source is not a regular file: %s", localPath)
+	}
+	if fi.IsDir() && !recursive {
 		return nil, fmt.Errorf("%s is a directory (use -r to copy recursively)", localPath)
 	}
-	var jobs []job
-	err = filepath.Walk(localPath, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	rootPath := localPath
+	if !fi.IsDir() {
+		rootPath = filepath.Dir(localPath)
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("open upload root: %w", err)
+	}
+	success := false
+	defer func() {
+		if !success {
+			root.Close()
 		}
-		if !info.IsDir() {
-			return nil
-		}
-		rel, rErr := filepath.Rel(localPath, p)
-		if rErr != nil {
-			return rErr
-		}
-		remote := remoteDir
-		if rel != "." {
-			remote = filepath.Join(remoteDir, filepath.FromSlash(rel))
-		}
-		entries, eErr := readLocalDirEntries(p)
-		if eErr != nil {
-			return eErr
-		}
-		jobs = append(jobs, job{localPath: p, remotePath: remote, files: entries})
-		return nil
-	})
+	}()
+	rootInfo, err := root.Stat(".")
 	if err != nil {
 		return nil, err
 	}
+	source := &uploadSource{root: root, directories: map[string]os.FileInfo{".": rootInfo}}
+	if !fi.IsDir() {
+		name := filepath.Base(localPath)
+		info, err := root.Lstat(name)
+		if err != nil || !os.SameFile(fi, info) {
+			return nil, fmt.Errorf("upload source changed while opening root: %s", localPath)
+		}
+		if err := budget.addEntry(name); err != nil {
+			return nil, err
+		}
+		success = true
+		return []job{{source: source, localPath: ".", remotePath: remoteDir, files: []*pb.FileEntry{localEntry(name, info)}, identities: []os.FileInfo{info}}}, nil
+	}
+	if !os.SameFile(fi, rootInfo) {
+		return nil, errors.New("upload directory changed while opening root")
+	}
+	var jobs []job
+	var walk func(string) error
+	walk = func(rel string) error {
+		remote := remoteDir
+		if rel != "." {
+			remote = filepath.Join(remoteDir, rel)
+		}
+		if err := budget.addPath(remote); err != nil {
+			return err
+		}
+		files, identities, directories, err := source.readDirectory(rel, ft.policy.IncludeHidden, &budget)
+		if err != nil {
+			return err
+		}
+		jobs = append(jobs, job{source: source, localPath: rel, remotePath: remote, files: files, identities: identities})
+		for _, dir := range directories {
+			source.directories[dir.path] = dir.info
+			if err := walk(dir.path); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := budget.addEntry("."); err != nil {
+		return nil, err
+	}
+	if err := walk("."); err != nil {
+		return nil, err
+	}
+	success = true
 	return jobs, nil
+}
+
+func (s *uploadSource) checkDirectories(path string) error {
+	for {
+		expected := s.directories[path]
+		info, err := s.root.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("upload directory %s is no longer accessible within the selected root: %w", path, err)
+		}
+		if expected == nil || !info.IsDir() || !os.SameFile(expected, info) {
+			return fmt.Errorf("upload directory changed since enumeration: %s", path)
+		}
+		if path == "." {
+			return nil
+		}
+		path = filepath.Dir(path)
+	}
+}
+
+func (s *uploadSource) readDirectory(path string, includeHidden bool, budget *transferListBudget) ([]*pb.FileEntry, []os.FileInfo, []uploadDirectory, error) {
+	if err := s.checkDirectories(path); err != nil {
+		return nil, nil, nil, err
+	}
+	dir, err := s.root.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open upload directory %s within selected root: %w", path, err)
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
+	if err != nil || !os.SameFile(s.directories[path], info) {
+		return nil, nil, nil, fmt.Errorf("upload directory changed since enumeration: %s", path)
+	}
+	var files []*pb.FileEntry
+	var identities []os.FileInfo
+	var directories []uploadDirectory
+	for {
+		entries, readErr := dir.ReadDir(128)
+		if readErr != nil && readErr != io.EOF {
+			return nil, nil, nil, readErr
+		}
+		for _, entry := range entries {
+			name := filepath.Join(path, entry.Name())
+			if err := budget.addEntry(name); err != nil {
+				return nil, nil, nil, err
+			}
+			if !includeHidden && strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			if err := s.checkDirectories(path); err != nil {
+				return nil, nil, nil, err
+			}
+			// DirEntry.Info may resolve the old absolute directory name after a rename.
+			info, err := s.root.Lstat(name)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if info.IsDir() {
+				directories = append(directories, uploadDirectory{path: name, info: info})
+			} else if info.Mode().IsRegular() {
+				files = append(files, localEntry(name, info))
+				identities = append(identities, info)
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+	}
+	order := make([]int, len(files))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(i, j int) bool { return files[order[i]].GetName() < files[order[j]].GetName() })
+	sortedFiles := make([]*pb.FileEntry, len(files))
+	sortedIdentities := make([]os.FileInfo, len(files))
+	for i, index := range order {
+		sortedFiles[i], sortedIdentities[i] = files[index], identities[index]
+	}
+	sort.Slice(directories, func(i, j int) bool { return directories[i].path < directories[j].path })
+	return sortedFiles, sortedIdentities, directories, nil
 }
 
 func (ft *FileTransfer) ensureRemoteDirs(remoteDir string, jobs []job) error {
@@ -286,8 +557,12 @@ func (ft *FileTransfer) sendJob(j job, progress ProgressFunc, filesDone, totalFi
 	fileIdx := 0
 	for fileIdx < len(j.files) {
 		entry := j.files[fileIdx]
-		offset := uint32(0)
 		if ft.overwriteEnabled {
+			if err := ft.sendTransferMessage(&pb.Message{Union: &pb.Message_FileResponse{FileResponse: &pb.FileResponse{Union: &pb.FileResponse_Digest{Digest: &pb.FileTransferDigest{
+				Id: id, FileNum: int32(fileIdx), FileSize: entry.GetSize(), LastModified: entry.GetModifiedTime(),
+			}}}}}); err != nil {
+				return 0, 0, err
+			}
 			d, err := ft.waitUploadDigest(id, fileIdx)
 			if err != nil {
 				return 0, 0, err
@@ -295,26 +570,26 @@ func (ft *FileTransfer) sendJob(j job, progress ProgressFunc, filesDone, totalFi
 			if d == nil {
 				filesDone++
 				doneBytes += int64(entry.GetSize())
-				if progress != nil {
+				sent += int64(entry.GetSize())
+				if progress != nil && fileIdx+1 < len(j.files) {
 					progress(filesDone, totalFiles, doneBytes, totalBytes)
 				}
 				fileIdx++
 				continue
 			}
-			if d.GetIsIdentical() && d.GetIsResume() && d.GetTransferredSize() > 0 {
-				offset = uint32(d.GetTransferredSize())
-			}
-			if err := ft.sendAction(&pb.FileAction{
-				Union: &pb.FileAction_SendConfirm{SendConfirm: &pb.FileTransferSendConfirmRequest{
-					Id:      id,
-					FileNum: int32(fileIdx),
-					Union:   &pb.FileTransferSendConfirmRequest_OffsetBlk{OffsetBlk: offset},
-				}},
-			}); err != nil {
-				return 0, 0, err
+			if d.GetIsUpload() {
+				// The peer cannot prove the contents of an upload prefix, so always restart.
+				confirm := &pb.FileTransferSendConfirmRequest{Id: id, FileNum: int32(fileIdx), Union: &pb.FileTransferSendConfirmRequest_OffsetBlk{OffsetBlk: 0}}
+				if err := ft.sendAction(&pb.FileAction{Union: &pb.FileAction_SendConfirm{SendConfirm: confirm}}); err != nil {
+					return 0, 0, err
+				}
 			}
 		}
-		n, err := ft.streamFile(id, int32(fileIdx), filepath.Join(j.localPath, entry.GetName()), offset)
+		n, err := ft.streamFile(id, int32(fileIdx), j.source, filepath.Join(j.localPath, entry.GetName()), j.identities[fileIdx], entry, func(n int64) {
+			if progress != nil {
+				progress(filesDone, totalFiles, doneBytes+n, totalBytes)
+			}
+		})
 		if err != nil {
 			return 0, 0, err
 		}
@@ -322,16 +597,50 @@ func (ft *FileTransfer) sendJob(j job, progress ProgressFunc, filesDone, totalFi
 		filesDone++
 		doneBytes += n
 		sent += n
-		if progress != nil {
+		if progress != nil && fileIdx < len(j.files) {
 			progress(filesDone, totalFiles, doneBytes, totalBytes)
 		}
 	}
 	if len(j.files) > 0 {
-		if err := ft.sendDone(id, int32(len(j.files)-1)); err != nil {
+		if err := ft.sendDone(id, int32(len(j.files))); err != nil {
+			return 0, 0, err
+		}
+		if err := ft.waitUploadDone(id, int32(len(j.files))); err != nil {
 			return 0, 0, err
 		}
 	}
 	return len(j.files), sent, nil
+}
+
+func (ft *FileTransfer) waitUploadDone(id, fileCount int32) error {
+	if err := ft.conn.sc.SetReadDeadline(time.Now().Add(ft.transferTimeout())); err != nil {
+		return err
+	}
+	defer ft.conn.sc.SetReadDeadline(time.Time{})
+	for {
+		msg, err := ft.conn.Recv()
+		if err != nil {
+			return fmt.Errorf("upload completion not acknowledged: %w", err)
+		}
+		if td := msg.GetTestDelay(); td != nil {
+			if err := ft.sendTransferMessage(&pb.Message{Union: &pb.Message_TestDelay{TestDelay: td}}); err != nil {
+				return err
+			}
+		}
+		fr := msg.GetFileResponse()
+		if fr == nil {
+			continue
+		}
+		if e := fr.GetError(); e != nil && e.GetId() == id {
+			return errors.New(ft.conn.PeerText(e.GetError()))
+		}
+		if d := fr.GetDone(); d != nil && d.GetId() == id {
+			if d.GetFileNum() != fileCount {
+				return fmt.Errorf("unexpected upload completion file number %d", d.GetFileNum())
+			}
+			return nil
+		}
+	}
 }
 
 // waitUploadDigest waits for the peer's overwrite-detection digest for the
@@ -339,14 +648,29 @@ func (ft *FileTransfer) sendJob(j job, progress ProgressFunc, filesDone, totalFi
 // the file, or the digest when the transfer should proceed. The caller sends
 // the SendConfirm with the chosen offset.
 func (ft *FileTransfer) waitUploadDigest(id int32, fileIdx int) (*pb.FileTransferDigest, error) {
+	if err := ft.conn.sc.SetReadDeadline(time.Now().Add(ft.transferTimeout())); err != nil {
+		return nil, err
+	}
+	defer ft.conn.sc.SetReadDeadline(time.Time{})
 	for {
 		msg, err := ft.conn.Recv()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("upload digest not received: %w", err)
+		}
+		if td := msg.GetTestDelay(); td != nil {
+			if err := ft.sendTransferMessage(&pb.Message{Union: &pb.Message_TestDelay{TestDelay: td}}); err != nil {
+				return nil, err
+			}
 		}
 		if fa := msg.GetFileAction(); fa != nil {
-			if sc := fa.GetSendConfirm(); sc != nil && sc.GetId() == id && sc.GetFileNum() == int32(fileIdx) && sc.GetSkip() {
-				return nil, nil
+			if sc := fa.GetSendConfirm(); sc != nil && sc.GetId() == id && sc.GetFileNum() == int32(fileIdx) {
+				if sc.GetSkip() {
+					return nil, nil
+				}
+				if sc.GetOffsetBlk() != 0 {
+					return nil, errors.New("unsolicited upload resume offset")
+				}
+				return &pb.FileTransferDigest{}, nil
 			}
 			continue
 		}
@@ -360,29 +684,47 @@ func (ft *FileTransfer) waitUploadDigest(id int32, fileIdx int) (*pb.FileTransfe
 			if d.GetId() != id || d.GetFileNum() != int32(fileIdx) {
 				continue
 			}
+			if !d.GetIsUpload() {
+				return nil, errors.New("unexpected download digest during upload")
+			}
 			return d, nil
 		case *pb.FileResponse_Error:
-			return nil, errors.New(u.Error.GetError())
+			if u.Error.GetId() == id {
+				return nil, errors.New(ft.conn.PeerText(u.Error.GetError()))
+			}
 		}
 	}
 }
 
-// streamFile sends one local file as FileResponse blocks followed by a done.
-func (ft *FileTransfer) streamFile(id, fileNum int32, path string, offset uint32) (int64, error) {
-	f, err := os.Open(path)
+func (ft *FileTransfer) streamFile(id, fileNum int32, source *uploadSource, path string, expected os.FileInfo, entry *pb.FileEntry, progress func(int64)) (int64, error) {
+	if err := source.checkDirectories(filepath.Dir(path)); err != nil {
+		return 0, err
+	}
+	before, err := source.root.Lstat(path)
 	if err != nil {
-		return 0, fmt.Errorf("open %s: %w", path, err)
+		return 0, fmt.Errorf("upload source %s is no longer accessible within the selected root: %w", path, err)
+	}
+	if !before.Mode().IsRegular() || !os.SameFile(expected, before) {
+		return 0, errors.New("upload source changed since enumeration")
+	}
+	// A FIFO substituted after Lstat must not block before the descriptor check.
+	f, err := source.root.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return 0, fmt.Errorf("open upload source %s within selected root: %w", path, err)
 	}
 	defer f.Close()
-	if offset > 0 {
-		if _, err := f.Seek(int64(offset), io.SeekStart); err != nil {
-			return 0, err
-		}
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(expected, info) || !info.ModTime().Equal(expected.ModTime()) || uint64(info.Size()) != entry.GetSize() || uint64(info.ModTime().Unix()) != entry.GetModifiedTime() {
+		return 0, errors.New("upload source changed before transfer")
 	}
 	buf := make([]byte, fileBlockSize)
+	reader := io.LimitReader(f, int64(entry.GetSize()))
 	var sent int64
 	for {
-		n, rErr := io.ReadFull(f, buf)
+		n, rErr := io.ReadFull(reader, buf)
 		if rErr != nil && rErr != io.ErrUnexpectedEOF && rErr != io.EOF {
 			return 0, fmt.Errorf("read %s: %w", path, rErr)
 		}
@@ -401,207 +743,31 @@ func (ft *FileTransfer) streamFile(id, fileNum int32, path string, offset uint32
 			return 0, err
 		}
 		sent += int64(n)
+		if progress != nil {
+			progress(sent)
+		}
 		if rErr != nil {
 			break
 		}
 	}
-	if err := ft.sendDone(id, fileNum); err != nil {
+	after, err := f.Stat()
+	if err != nil {
 		return 0, err
+	}
+	if uint64(sent) != entry.GetSize() || !after.ModTime().Equal(info.ModTime()) || after.Size() != info.Size() {
+		return 0, errors.New("upload source changed during transfer")
+	}
+	if sent == 0 {
+		if err := ft.sendBlock(&pb.FileTransferBlock{Id: id, FileNum: fileNum}); err != nil {
+			return 0, err
+		}
 	}
 	return sent, nil
 }
 
 // Receive downloads remotePath to localPath (file or recursive tree).
 func (ft *FileTransfer) Receive(remotePath, localPath string, progress ProgressFunc) error {
-	id := ft.nextJobID()
-	if err := ft.sendAction(&pb.FileAction{
-		Union: &pb.FileAction_Send{Send: &pb.FileTransferSendRequest{
-			Id:       id,
-			Path:     remotePath,
-			FileNum:  0,
-			FileType: pb.FileTransferSendRequest_Generic,
-		}},
-	}); err != nil {
-		return err
-	}
-
-	var files []*pb.FileEntry
-	var cur *os.File
-	curNum := int32(-1)
-	skipped := map[int32]bool{}
-	filesDone := 0
-	doneBytes := int64(0)
-	totalBytes := int64(0)
-	singleTarget := !strings.HasSuffix(localPath, string(filepath.Separator))
-	if fi, err := os.Stat(localPath); err == nil && fi.IsDir() {
-		singleTarget = false
-	}
-	dstFor := func(num int32) string {
-		if singleTarget && num == 0 && len(files) == 1 {
-			return localPath
-		}
-		if int(num) >= len(files) {
-			return localPath
-		}
-		return filepath.Join(localPath, filepath.FromSlash(files[num].GetName()))
-	}
-	report := func() {
-		if progress != nil {
-			progress(filesDone, len(files), doneBytes, totalBytes)
-		}
-	}
-
-	for {
-		msg, err := ft.conn.Recv()
-		if err != nil {
-			closeFile(cur)
-			return err
-		}
-		fr := msg.GetFileResponse()
-		if fr == nil {
-			continue
-		}
-		switch u := fr.GetUnion().(type) {
-		case *pb.FileResponse_Error:
-			closeFile(cur)
-			return errors.New(u.Error.GetError())
-		case *pb.FileResponse_Dir:
-			if files == nil {
-				files = u.Dir.GetEntries()
-				for _, f := range files {
-					totalBytes += int64(f.GetSize())
-				}
-				report()
-			}
-		case *pb.FileResponse_Digest:
-			d := u.Digest
-			if d.GetId() != id {
-				continue
-			}
-			idx := int(d.GetFileNum())
-			if idx >= len(files) {
-				continue
-			}
-			dst := dstFor(d.GetFileNum())
-			skip, offset := ft.overwriteDecision(dst, d)
-			req := &pb.FileTransferSendConfirmRequest{Id: id, FileNum: d.GetFileNum()}
-			if skip {
-				req.Union = &pb.FileTransferSendConfirmRequest_Skip{Skip: true}
-				skipped[d.GetFileNum()] = true
-			} else {
-				req.Union = &pb.FileTransferSendConfirmRequest_OffsetBlk{OffsetBlk: offset}
-			}
-			if err := ft.sendAction(&pb.FileAction{Union: &pb.FileAction_SendConfirm{SendConfirm: req}}); err != nil {
-				closeFile(cur)
-				return err
-			}
-		case *pb.FileResponse_Block:
-			b := u.Block
-			if b.GetId() != id {
-				continue
-			}
-			if b.GetFileNum() != curNum {
-				closeFile(cur)
-				cur = nil
-				curNum = b.GetFileNum()
-				if int(curNum) >= len(files) {
-					return fmt.Errorf("file number %d out of range", curNum)
-				}
-				f, err := openDownloadFile(dstFor(curNum))
-				if err != nil {
-					return err
-				}
-				cur = f
-			}
-			data := b.GetData()
-			if b.GetCompressed() {
-				plain, err := zstdDec.DecodeAll(data, nil)
-				if err != nil {
-					closeFile(cur)
-					return fmt.Errorf("decompress block: %w", err)
-				}
-				data = plain
-			}
-			if _, err := cur.Write(data); err != nil {
-				closeFile(cur)
-				return fmt.Errorf("write %s: %w", dstFor(curNum)+".download", err)
-			}
-			doneBytes += int64(len(data))
-			report()
-		case *pb.FileResponse_Done:
-			d := u.Done
-			if d.GetId() != id {
-				continue
-			}
-			if int(d.GetFileNum()) < len(files) {
-				closeFile(cur)
-				cur = nil
-				if !skipped[d.GetFileNum()] {
-					dst := dstFor(d.GetFileNum())
-					if err := finalizeDownload(dst, files[d.GetFileNum()]); err != nil {
-						return err
-					}
-				}
-				filesDone++
-				report()
-			}
-			if int(d.GetFileNum()) == len(files)-1 {
-				closeFile(cur)
-				report()
-				return nil
-			}
-		}
-	}
-}
-
-// overwriteDecision decides skip/resume/overwrite for a download digest.
-func (ft *FileTransfer) overwriteDecision(dst string, d *pb.FileTransferDigest) (skip bool, offset uint32) {
-	if fi, err := os.Stat(dst); err == nil && !fi.IsDir() {
-		if fi.Size() == int64(d.GetFileSize()) && fi.ModTime().Unix() == int64(d.GetLastModified()) {
-			return true, 0
-		}
-	}
-	digestPath := dst + ".digest"
-	downloadPath := dst + ".download"
-	if d.GetIsResume() {
-		if data, err := os.ReadFile(digestPath); err == nil {
-			var ld struct {
-				Size     uint64 `json:"size"`
-				Modified uint64 `json:"modified"`
-			}
-			if json.Unmarshal(data, &ld) == nil && ld.Size == d.GetFileSize() && ld.Modified == d.GetLastModified() {
-				if fi, err := os.Stat(downloadPath); err == nil && fi.Size() > 0 {
-					return false, uint32(fi.Size())
-				}
-			}
-		}
-	}
-	return false, 0
-}
-
-func openDownloadFile(dst string) (*os.File, error) {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return nil, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
-	}
-	downloadPath := dst + ".download"
-	f, err := os.OpenFile(downloadPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", downloadPath, err)
-	}
-	return f, nil
-}
-
-func finalizeDownload(dst string, entry *pb.FileEntry) error {
-	downloadPath := dst + ".download"
-	_ = os.Remove(dst + ".digest")
-	if err := os.Rename(downloadPath, dst); err != nil {
-		return fmt.Errorf("finalize %s: %w", dst, err)
-	}
-	if entry.GetModifiedTime() > 0 {
-		mt := time.Unix(int64(entry.GetModifiedTime()), 0)
-		_ = os.Chtimes(dst, mt, mt)
-	}
-	return nil
+	return ft.receiveFiles(remotePath, localPath, progress)
 }
 
 func closeFile(f *os.File) {
@@ -611,31 +777,22 @@ func closeFile(f *os.File) {
 }
 
 func readLocalDirEntries(dir string) ([]*pb.FileEntry, error) {
-	entries, err := os.ReadDir(dir)
+	return readLocalDirEntriesPolicy(dir, false)
+}
+
+func readLocalDirEntriesPolicy(dir string, includeHidden bool) ([]*pb.FileEntry, error) {
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(entries, func(a, b int) bool { return entries[a].Name() < entries[b].Name() })
-	out := make([]*pb.FileEntry, 0, len(entries))
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		if e.IsDir() {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, &pb.FileEntry{
-			Name:         e.Name(),
-			EntryType:    pb.FileType_File,
-			Size:         uint64(info.Size()),
-			ModifiedTime: uint64(info.ModTime().Unix()),
-		})
+	defer root.Close()
+	info, err := root.Stat(".")
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	source := &uploadSource{root: root, directories: map[string]os.FileInfo{".": info}}
+	entries, _, _, err := source.readDirectory(".", includeHidden, &transferListBudget{})
+	return entries, err
 }
 
 func localEntry(path string, fi os.FileInfo) *pb.FileEntry {
@@ -704,7 +861,12 @@ func ReadAllFilesList(opts DialOpts, remotePath string) ([]*pb.FileEntry, error)
 	}); err != nil {
 		return nil, err
 	}
+	return ft.readAllFilesList()
+}
+
+func (ft *FileTransfer) readAllFilesList() ([]*pb.FileEntry, error) {
 	var entries []*pb.FileEntry
+	var budget transferListBudget
 	for {
 		msg, err := ft.conn.Recv()
 		if err != nil {
@@ -716,11 +878,14 @@ func ReadAllFilesList(opts DialOpts, remotePath string) ([]*pb.FileEntry, error)
 		}
 		switch u := fr.GetUnion().(type) {
 		case *pb.FileResponse_Dir:
+			if err := budget.addDirectory(u.Dir); err != nil {
+				return nil, err
+			}
 			entries = append(entries, u.Dir.GetEntries()...)
 		case *pb.FileResponse_Done:
 			return entries, nil
 		case *pb.FileResponse_Error:
-			return nil, errors.New(u.Error.GetError())
+			return nil, errors.New(ft.conn.PeerText(u.Error.GetError()))
 		}
 	}
 }

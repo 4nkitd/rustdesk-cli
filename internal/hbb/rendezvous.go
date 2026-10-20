@@ -1,8 +1,10 @@
 package hbb
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"strconv"
@@ -10,7 +12,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 const DefaultRendezvousServer = "rs-ny.rustdesk.com:21116"
@@ -26,25 +28,27 @@ func normalizeServerAddr(server string) string {
 }
 
 func readRendezvousMessage(conn net.Conn) (*pb.RendezvousMessage, error) {
-	var readBuf []byte
-	tmp := make([]byte, 4096)
-	for {
-		frame, ok := DecodeFrame(&readBuf)
-		if ok {
-			msg := &pb.RendezvousMessage{}
-			if err := proto.Unmarshal(frame, msg); err != nil {
-				return nil, fmt.Errorf("hbb: unmarshal rendezvous message: %w", err)
-			}
-			return msg, nil
-		}
-		n, err := conn.Read(tmp)
-		if n > 0 {
-			readBuf = append(readBuf, tmp[:n]...)
-		}
-		if err != nil {
-			return nil, err
-		}
+	var header [4]byte
+	if _, err := io.ReadFull(conn, header[:1]); err != nil {
+		return nil, err
 	}
+	headerLen := int(header[0]&3) + 1
+	if _, err := io.ReadFull(conn, header[1:headerLen]); err != nil {
+		return nil, err
+	}
+	length := binary.LittleEndian.Uint32(header[:]) >> 2
+	if length > maxFramePayloadLength {
+		return nil, fmt.Errorf("hbb: rendezvous frame length %d exceeds maximum %d", length, maxFramePayloadLength)
+	}
+	frame := make([]byte, int(length))
+	if _, err := io.ReadFull(conn, frame); err != nil {
+		return nil, err
+	}
+	msg := &pb.RendezvousMessage{}
+	if err := decodeRendezvousMessage(frame, msg); err != nil {
+		return nil, fmt.Errorf("hbb: unmarshal rendezvous message: %w", err)
+	}
+	return msg, nil
 }
 
 func writeRendezvousMessage(conn net.Conn, msg *pb.RendezvousMessage) error {
@@ -53,7 +57,7 @@ func writeRendezvousMessage(conn net.Conn, msg *pb.RendezvousMessage) error {
 		return fmt.Errorf("hbb: marshal rendezvous message: %w", err)
 	}
 	framed := Encode(data)
-	_, err = conn.Write(framed)
+	_, err = writeFull(conn, framed)
 	return err
 }
 
@@ -207,7 +211,7 @@ func queryOnlineUDP(host, port string, framed []byte, timeout time.Duration) ([]
 				break
 			}
 			msg := &pb.RendezvousMessage{}
-			if err := proto.Unmarshal(buf[:n], msg); err != nil {
+			if err := decodeRendezvousMessage(buf[:n], msg); err != nil {
 				continue
 			}
 			if ol := msg.GetOnlineResponse(); ol != nil {
@@ -236,7 +240,7 @@ func queryOnlineTCP(addr string, framed []byte, timeout time.Duration) ([]byte, 
 	for {
 		if frame, ok := DecodeFrame(&readBuf); ok {
 			msg := &pb.RendezvousMessage{}
-			if err := proto.Unmarshal(frame, msg); err != nil {
+			if err := decodeRendezvousMessage(frame, msg); err != nil {
 				return nil, 0, fmt.Errorf("hbb: unmarshal online response: %w", err)
 			}
 			if ol := msg.GetOnlineResponse(); ol != nil {

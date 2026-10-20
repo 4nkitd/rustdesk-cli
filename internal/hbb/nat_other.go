@@ -1,36 +1,19 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package hbb
 
-import (
-	"errors"
-	"net"
-	"net/netip"
-	"time"
-)
+import "syscall"
 
-var errWouldBlock = errors.New("connect would block")
-
-// dialPunchLinux is unsupported on non-Linux platforms; dialPunch falls back
-// to a plain dial.
-func dialPunchLinux(local, peer netip.AddrPort, timeout time.Duration) (net.Conn, error) {
-	return nil, errors.New("hole punch unsupported on this platform")
+func reuseControl(network, address string, c syscall.RawConn) error {
+	var setErr error
+	err := c.Control(func(fd uintptr) {
+		setErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+		if setErr == nil {
+			setErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEPORT, 1)
+		}
+	})
+	if err != nil {
+		return err
+	}
+	return setErr
 }
-
-// socketBind on non-Linux platforms is a no-op stub; dialPunch falls back to a
-// plain dial, so these are never used.
-func socketBind(local netip.AddrPort) (int, error) {
-	return -1, errors.New("hole punch unsupported on this platform")
-}
-
-func socketConnect(fd int, peer netip.AddrPort) error {
-	return errors.New("hole punch unsupported on this platform")
-}
-
-func closeFD(fd int) {}
-
-func socketToConn(fd int, local, peer netip.AddrPort) (net.Conn, error) {
-	return nil, errors.New("hole punch unsupported on this platform")
-}
-
-var _ = time.Second

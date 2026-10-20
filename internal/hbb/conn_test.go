@@ -13,7 +13,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 func mustSignIDPk(t *testing.T, serverEdPriv ed25519.PrivateKey, peerID string, pk []byte) []byte {
@@ -226,8 +226,6 @@ func TestConnectAndLogin(t *testing.T) {
 }
 
 func TestConnectInsecureFallback(t *testing.T) {
-	// Without a valid --key, the client must fall back to a plaintext
-	// connection and still complete login.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("peer listen: %v", err)
@@ -235,7 +233,6 @@ func TestConnectInsecureFallback(t *testing.T) {
 	done := make(chan struct{})
 	var doneOnce sync.Once
 	go func() {
-		defer close(done)
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -317,13 +314,21 @@ func TestConnectInsecureFallback(t *testing.T) {
 		}
 	}()
 
-	c, err := Connect(DialOpts{
+	opts := DialOpts{
 		Server:   rvLn.Addr().String(),
 		PeerID:   "test-peer",
 		Password: "",
 		Key:      "",
 		Timeout:  5 * time.Second,
-	})
+	}
+	defer ln.Close()
+	defer rvLn.Close()
+	if c, err := Connect(opts); err == nil {
+		c.Close()
+		t.Fatal("unsigned peer accepted without explicit consent")
+	}
+	opts.Yes = true
+	c, err := Connect(opts)
 	if err != nil {
 		t.Fatalf("Connect failed: %v", err)
 	}

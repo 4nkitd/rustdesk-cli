@@ -60,19 +60,24 @@ func (c *BytesCodec) Encode(data []byte) []byte {
 }
 
 func (c *BytesCodec) DecodeFrame(src *[]byte) ([]byte, bool) {
+	frame, ok, _ := c.decodeFrame(src)
+	return frame, ok
+}
+
+func (c *BytesCodec) decodeFrame(src *[]byte) ([]byte, bool, error) {
 	if src == nil || len(*src) == 0 {
-		return nil, false
+		return nil, false, nil
 	}
 
 	if c.raw {
 		data := *src
 		*src = nil
-		return data, true
+		return data, true, nil
 	}
 
 	headLen := int(((*src)[0] & 0x3) + 1)
 	if len(*src) < headLen {
-		return nil, false
+		return nil, false, nil
 	}
 
 	var n uint32
@@ -89,17 +94,17 @@ func (c *BytesCodec) DecodeFrame(src *[]byte) ([]byte, bool) {
 
 	payloadLen := int(n >> 2)
 	if c.maxPacketLength > 0 && payloadLen > c.maxPacketLength {
-		return nil, false
+		return nil, false, fmt.Errorf("hbb: frame payload length %d exceeds maximum %d", payloadLen, c.maxPacketLength)
 	}
 
 	totalLen := headLen + payloadLen
 	if len(*src) < totalLen {
-		return nil, false
+		return nil, false, nil
 	}
 
 	frame := (*src)[headLen:totalLen]
 	*src = (*src)[totalLen:]
-	return frame, true
+	return frame, true, nil
 }
 
 var defaultCodec = NewBytesCodec()

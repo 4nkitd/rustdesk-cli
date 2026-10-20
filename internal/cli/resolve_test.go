@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"rdcli/internal/config"
+	"github.com/4nkitd/rustdesk-cli/internal/config"
 )
 
 func TestResolveRef(t *testing.T) {

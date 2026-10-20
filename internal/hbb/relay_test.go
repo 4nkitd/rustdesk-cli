@@ -11,7 +11,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 // runMockRelay implements a minimal hbbr: it accepts the client connection,
@@ -150,6 +150,15 @@ func TestConnectViaRelay(t *testing.T) {
 					return
 				}
 				if msg.GetRequestRelay() != nil {
+					signedPk := mustSignIDPk(t, serverPriv, "test-peer", peerPub)
+					resp := &pb.RendezvousMessage{
+						Union: &pb.RendezvousMessage_RelayResponse{
+							RelayResponse: &pb.RelayResponse{RelayServer: relayAddr, Uuid: "relay-uuid-1", Union: &pb.RelayResponse_Pk{Pk: signedPk}},
+						},
+					}
+					_ = writeRendezvousMessage(c, resp)
+				}
+				if ph := msg.GetPunchHoleRequest(); ph != nil {
 					signedPk := mustSignIDPk(t, serverPriv, "test-peer", peerPub)
 					resp := &pb.RendezvousMessage{
 						Union: &pb.RendezvousMessage_RelayResponse{

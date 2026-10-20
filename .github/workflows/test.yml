@@ -1,0 +1,39 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Check tracked entrypoint
+        run: git ls-files --error-unmatch cmd/rdcli/main.go
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: "1.27.3"
+      - run: go test -race ./... -count=1 -timeout=120s
+      - run: go vet ./...
+      - name: Build and smoke-test CLI
+        shell: bash
+        run: |
+          go build -o "$RUNNER_TEMP/rdcli" ./cmd/rdcli
+          "$RUNNER_TEMP/rdcli" version
+          "$RUNNER_TEMP/rdcli" --help

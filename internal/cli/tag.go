@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"rdcli/internal/config"
-	"rdcli/internal/hbb"
+	"github.com/4nkitd/rustdesk-cli/internal/config"
+	"github.com/4nkitd/rustdesk-cli/internal/hbb"
 
 	"github.com/spf13/cobra"
 )
@@ -49,7 +49,10 @@ func runTagAdd(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 		return nil
 	}
-	id, _, _ := ResolveRef(cfg, ref)
+	id, _, err := ResolveRef(cfg, ref)
+	if err != nil {
+		return fmt.Errorf("tag add: %w", err)
+	}
 	src, err := hbb.NewDeviceSource(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tag add: %v\n", err)
@@ -76,7 +79,10 @@ func runTagRm(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 		return nil
 	}
-	id, _, _ := ResolveRef(cfg, ref)
+	id, _, err := ResolveRef(cfg, ref)
+	if err != nil {
+		return fmt.Errorf("tag rm: %w", err)
+	}
 	src, err := hbb.NewDeviceSource(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tag rm: %v\n", err)
@@ -102,6 +108,13 @@ func runTagLs(cmd *cobra.Command, args []string) error {
 		os.Exit(1)
 		return nil
 	}
+	var id string
+	if len(args) == 1 {
+		id, _, err = ResolveRef(cfg, args[0])
+		if err != nil {
+			return fmt.Errorf("tag ls: %w", err)
+		}
+	}
 	src, err := hbb.NewDeviceSource(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tag ls: %v\n", err)
@@ -109,7 +122,6 @@ func runTagLs(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	if len(args) == 1 {
-		id, _, _ := ResolveRef(cfg, args[0])
 		tags := sortedCopy(src.Tags(id))
 		if isJSONFlag(cmd) {
 			printJSONTags(map[string][]string{id: tags})

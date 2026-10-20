@@ -3,15 +3,14 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"rdcli/internal/hbb"
+	"github.com/4nkitd/rustdesk-cli/internal/hbb"
 
-	pb "rdcli/internal/hbb/proto"
+	pb "github.com/4nkitd/rustdesk-cli/internal/hbb/proto"
 )
 
 type lsEntryJSON struct {
@@ -29,36 +28,35 @@ type lsJSON struct {
 }
 
 func newLsCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "ls [<ref>] [remote_path]",
 		Short: "remote directory listing",
 		RunE:  runLs,
 	}
+	cmd.Flags().BoolP("all", "a", false, "include hidden entries")
+	return cmd
 }
 
 func runLs(cmd *cobra.Command, args []string) error {
+	result := fileOperationJSON{Operation: "ls"}
+	fail := func(err error) error { return fileOperationError(cmd, result, err) }
 	peerID, password, remArgs, err := resolveTarget(cmd, args)
 	if err != nil {
-		return err
+		return fail(err)
+	}
+	if len(remArgs) > 1 {
+		return fail(usageErrorf("usage: rdcli %s", cmd.Use))
 	}
 	remotePath := "."
 	if len(remArgs) >= 1 {
 		remotePath = remArgs[0]
 	}
+	result.Path = remotePath
 	opts := dialOpts(cmd, peerID, password, pb.ConnType_FILE_TRANSFER)
-	ft, err := hbb.NewFileTransfer(opts, remotePath)
+	all, _ := cmd.Flags().GetBool("all")
+	dir, err := hbb.ReadDirWithHidden(opts, remotePath, all)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ls: %v\n", err)
-		os.Exit(1)
-		return nil
-	}
-	defer ft.Close()
-
-	dir, err := ft.ReadDir(remotePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ls: %v\n", err)
-		os.Exit(1)
-		return nil
+		return fail(err)
 	}
 	entries := append([]*pb.FileEntry(nil), dir.GetEntries()...)
 	sort.Slice(entries, func(i, j int) bool {
@@ -79,8 +77,7 @@ func runLs(cmd *cobra.Command, args []string) error {
 				IsHidden:     e.GetIsHidden(),
 			})
 		}
-		json.NewEncoder(os.Stdout).Encode(out)
-		return nil
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
 	}
 
 	rows := [][]string{{"NAME", "TYPE", "SIZE", "MODIFIED"}}

@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
+
+	"golang.org/x/crypto/nacl/secretbox"
 )
 
 type streamMode int
@@ -15,14 +18,24 @@ const (
 	modeRaw
 )
 
+// Limit wire payloads, including encryption overhead, while allowing large
+// screenshots and file-transfer messages. The wire format itself allows 1 GiB.
+const maxFramePayloadLength = 64 << 20
+
 // SecureConn is a framed stream that can be plaintext, secretbox-encrypted,
 // or raw (unframed). It mirrors hbb_common tcp::FramedStream.
+// Writes may run concurrently with each other and with a single reader.
+// Callers must serialize reads and keep SetKey/SetRaw exclusive of all I/O
+// and mode inspection. Underlying must not be used for concurrent direct I/O.
 type SecureConn struct {
 	conn      net.Conn
 	mode      streamMode
 	encryptor *Encryptor
 	readBuf   []byte
 	decBuf    []byte
+	readErr   error
+	writeMu   sync.Mutex
+	writeErr  error
 }
 
 func NewSecureConn(conn net.Conn) *SecureConn {
@@ -42,7 +55,6 @@ func (s *SecureConn) SetKey(key [32]byte) {
 func (s *SecureConn) SetRaw() {
 	s.mode = modeRaw
 	s.encryptor = nil
-	s.readBuf = nil
 	s.decBuf = nil
 }
 
@@ -68,34 +80,19 @@ func (s *SecureConn) Read(p []byte) (int, error) {
 				s.readBuf = s.readBuf[n:]
 				return n, nil
 			}
+			if s.readErr != nil {
+				err := s.readErr
+				s.readErr = nil
+				return 0, err
+			}
 			return s.conn.Read(p)
 		}
 
-		if len(s.readBuf) > 0 {
-			frame, ok := DecodeFrame(&s.readBuf)
-			if ok {
-				if err := s.decryptFrame(frame); err != nil {
-					return 0, err
-				}
-				continue
-			}
-		}
-
-		buf := make([]byte, 4096)
-		n, err := s.conn.Read(buf)
-		if n > 0 {
-			s.readBuf = append(s.readBuf, buf[:n]...)
-		}
+		frame, err := s.readFrame()
 		if err != nil {
-			if len(s.readBuf) > 0 {
-				frame, ok := DecodeFrame(&s.readBuf)
-				if ok {
-					if decErr := s.decryptFrame(frame); decErr != nil {
-						return 0, decErr
-					}
-					continue
-				}
-			}
+			return 0, err
+		}
+		if err := s.decryptFrame(frame); err != nil {
 			return 0, err
 		}
 	}
@@ -121,46 +118,82 @@ func (s *SecureConn) decryptFrame(frame []byte) error {
 }
 
 func (s *SecureConn) Write(p []byte) (int, error) {
-	switch s.mode {
-	case modeRaw:
-		return s.conn.Write(p)
-	case modeEncrypted:
-		encrypted := s.encryptor.Encrypt(p)
-		framed := Encode(encrypted)
-		if _, err := s.conn.Write(framed); err != nil {
-			return 0, err
-		}
-		return len(p), nil
-	default:
-		framed := Encode(p)
-		if _, err := s.conn.Write(framed); err != nil {
-			return 0, err
-		}
-		return len(p), nil
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if s.writeErr != nil {
+		return 0, s.writeErr
 	}
+	if s.mode == modeRaw {
+		return writeFull(s.conn, p)
+	}
+	maxLen := maxFramePayloadLength
+	if s.mode == modeEncrypted {
+		maxLen -= secretbox.Overhead
+	}
+	if len(p) > maxLen {
+		return 0, fmt.Errorf("hbb: message length %d exceeds maximum %d", len(p), maxLen)
+	}
+	payload := p
+	if s.mode == modeEncrypted {
+		payload = s.encryptor.Encrypt(p)
+	}
+	if _, err := writeFull(s.conn, Encode(payload)); err != nil {
+		// A partial frame or advanced nonce makes further framed writes unsafe.
+		s.writeErr = err
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func writeFull(w io.Writer, p []byte) (int, error) {
+	total := 0
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		total += n
+		p = p[n:]
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, io.ErrShortWrite
+		}
+	}
+	return total, nil
 }
 
 // ReadMessage reads one full frame and returns it decrypted/plain as raw bytes.
 func (s *SecureConn) ReadMessage() ([]byte, error) {
+	frame, err := s.readFrame()
+	if err != nil {
+		return nil, err
+	}
+	if s.mode == modeEncrypted && len(frame) > 1 {
+		return s.encryptor.Decrypt(frame)
+	}
+	return frame, nil
+}
+
+func (s *SecureConn) readFrame() ([]byte, error) {
+	codec := BytesCodec{maxPacketLength: maxFramePayloadLength}
 	tmp := make([]byte, 4096)
 	for {
-		frame, ok := DecodeFrame(&s.readBuf)
-		if ok {
-			if s.mode == modeEncrypted && len(frame) > 1 {
-				plain, err := s.encryptor.Decrypt(frame)
-				if err != nil {
-					return nil, err
-				}
-				return plain, nil
-			}
-			return frame, nil
-		}
-		n, err := s.conn.Read(tmp)
-		if n > 0 {
-			s.readBuf = append(s.readBuf, tmp[:n]...)
-		}
+		frame, ok, err := codec.decodeFrame(&s.readBuf)
 		if err != nil {
 			return nil, err
+		}
+		if ok {
+			return frame, nil
+		}
+		if s.readErr != nil {
+			err := s.readErr
+			s.readErr = nil
+			return nil, err
+		}
+		var n int
+		n, s.readErr = s.conn.Read(tmp)
+		if n > 0 {
+			s.readBuf = append(s.readBuf, tmp[:n]...)
 		}
 	}
 }
@@ -204,7 +237,7 @@ func SecureHandshake(conn net.Conn, keypair KeyPair, theirPub []byte) ([32]byte,
 		return [32]byte{}, fmt.Errorf("hbb: invalid remote public key length: %d", len(theirPub))
 	}
 
-	if _, err := conn.Write(keypair.Pub); err != nil {
+	if _, err := writeFull(conn, keypair.Pub); err != nil {
 		return [32]byte{}, fmt.Errorf("hbb: failed to send public key: %w", err)
 	}
 
