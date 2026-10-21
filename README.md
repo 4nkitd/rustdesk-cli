@@ -10,8 +10,6 @@ A pure-Go CLI that speaks the RustDesk wire protocol directly, without the offic
 
 This README describes the published [v0.2.0 release](https://github.com/4nkitd/rustdesk-cli/releases/tag/v0.2.0), also available through Homebrew. The new commands pass local mock tests, but real-peer compatibility remains unverified; see [verification status](#verification-status).
 
-> ⚠️ **Not the botnet.** In early 2026 a Go-based botnet ("Go Client", ~2M IPs) was reported scanning and brute-forcing RustDesk endpoints (rustdesk/rustdesk#14167). rdcli is unrelated to it: this is auditable open-source software that **only ever connects to machine refs you explicitly provide** — it has no scanning, no ID enumeration, and no brute-force mode. Never accept connections from clients you don't recognize, and use strong peer passwords.
-
 ![rdcli demo](docs/demo.svg)
 
 ```
