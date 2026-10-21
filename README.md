@@ -17,10 +17,6 @@ rdcli -c linux-box sh "uname -a"
 rdcli -c home-pc tunnel -L 3389:localhost:3389
 ```
 
-## Why
-
-RustDesk's public server now requires login, and the desktop GUI is the only official client. `rdcli` speaks the protocol itself: it reuses your existing RustDesk login (including the desktop app's remembered credentials), punches through NAT via hbbs, relays via hbbr, and authenticates to the controlled peer — all from a terminal.
-
 ## Use cases
 
 - **Scripting & automation** — run remote commands, copy files, and set up tunnels from cron, CI, or deploy scripts; exit codes and JSON output make it pipe-friendly.
@@ -38,20 +34,7 @@ brew tap 4nkitd/tap
 brew install 4nkitd/tap/rustdesk-cli
 ```
 
-The tap is hosted at [4nkitd/homebrew-tap](https://github.com/4nkitd/homebrew-tap). Its formula installs v0.2.0 and bundled license notices. Upgrade, `brew test`, installed version/help and checksum checks passed on macOS arm64. Existing users can run `brew update` followed by `brew upgrade 4nkitd/tap/rustdesk-cli`.
-
-### Prebuilt binaries
-
-Grab the right `rdcli-<os>-<arch>` asset from [Releases](https://github.com/4nkitd/rustdesk-cli/releases), then:
-
-```sh
-chmod +x rdcli-linux-amd64
-sudo mv rdcli-linux-amd64 /usr/local/bin/rdcli
-```
-
-### From source
-
-v0.2.0 repairs the module path and includes the previously ignored CLI entrypoint. Public installation and startup checks passed with both `@v0.2.0` and `@latest` on macOS arm64. The older v0.1.0 tag cannot be installed using this path.
+### OR `go install`
 
 ```sh
 go install github.com/4nkitd/rustdesk-cli/cmd/rdcli@latest
