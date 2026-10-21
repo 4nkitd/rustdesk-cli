@@ -6,9 +6,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/4nkitd/rustdesk-cli/release.yml?label=release%20builds)](https://github.com/4nkitd/rustdesk-cli/actions)
 [![Stars](https://img.shields.io/github/stars/4nkitd/rustdesk-cli?style=social)](https://github.com/4nkitd/rustdesk-cli)
 
-A pure-Go CLI that speaks the RustDesk wire protocol directly, without the official GUI or binary. Connect to RustDesk peers by ID, name, or tag for file transfers, TCP tunnels, and remote shells. Listing commands offer tables and JSON; shell and tunnel commands carry stream output. Availability depends on the peer's version, permissions, and server configuration.
-
-This README describes the published [v0.2.0 release](https://github.com/4nkitd/rustdesk-cli/releases/tag/v0.2.0), also available through Homebrew. The new commands pass local mock tests, but real-peer compatibility remains unverified; see [verification status](#verification-status).
+A CLI that speaks the RustDesk wire protocol directly, without the official GUI or binary. Connect to RustDesk peers by ID, name, or tag for file transfers, TCP tunnels, and remote shells. Listing commands offer tables and JSON; shell and tunnel commands carry stream output. Availability depends on the peer's version, permissions, and server configuration.
 
 ![rdcli demo](docs/demo.svg)
 
